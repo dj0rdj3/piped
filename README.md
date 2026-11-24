@@ -1,0 +1,42 @@
+# Piped
+
+Run shell scripts on your servers over SSH from a web interface.
+
+## Features
+
+- Run jobs across hosts sequentially or in parallel, manually or on a cron schedule.
+- Follow live terminal output, answer prompts, and cancel individual hosts.
+- Manage SSH keys, encrypted passwords and job secrets, and host-key approvals.
+- Keep run history in SQLite, PostgreSQL, MariaDB, or MySQL.
+
+## Install
+
+From the repository root on Linux:
+
+```bash
+sh scripts/setup.sh
+make build
+```
+
+Setup installs the required tools and dependencies. Already have a binary? Skip the build.
+For Docker builds and development setup, see [DEV.md](DEV.md).
+
+Create the encryption key and first administrator, then start Piped:
+
+```bash
+./bin/piped keygen
+./bin/piped register
+./bin/piped
+```
+
+Skip `keygen` if `.env` already exists, and `register` if an account already exists.
+Open [http://127.0.0.1:8080](http://127.0.0.1:8080) and sign in.
+Always start from the same directory: settings live in `.env`, and SQLite defaults to
+`data/piped.db`. Back up the database and keep a separate backup of `.env` with its encryption key.
+
+Edit `.env` to change settings; [.env.example](.env.example) lists the defaults.
+For access from other machines, use an HTTPS reverse proxy, set `PIPED_PUBLIC_URL`
+to its exact origin, and enable WebSocket forwarding. Keep the backend listener private.
+
+Remote hosts need Linux, SSH with PTY support, Bash, `stty`, `sleep`, `mktemp`, `chmod`,
+and `rm`; non-root jobs also need `setpriv`, and job secrets need `base64`.

@@ -1,0 +1,23 @@
+# Allow only build inputs; never send deployment secrets or data to the builder.
+**
+!Dockerfile
+!.dockerignore
+!go.mod
+!go.sum
+!scripts/
+!scripts/govulncheck.version
+!cmd/
+!cmd/**
+!internal/
+!internal/**
+!web/
+!web/**
+web/node_modules/
+web/dist/
+**/.env
+**/.env.*
+**/*.db
+**/*.db-shm
+**/*.db-wal
+**/.cache/
+**/.git/
