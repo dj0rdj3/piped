@@ -141,7 +141,7 @@ export async function registerWebMCP(
     {
       name: 'piped_list_jobs',
       description:
-        'List shared job definitions, scripts, ordered target host IDs, schedules, server timezone, secret names, and latest-run summaries. Secret values are never returned. Does not run jobs.',
+        'List shared job definitions, scripts, ordered target host IDs, dynamic host tags, excluded host IDs, schedules, server timezone, secret names, and latest-run summaries. Secret values are never returned. Does not run jobs.',
       inputSchema: { type: 'object', properties: {}, additionalProperties: false },
       annotations: { readOnlyHint: true, untrustedContentHint: true, debugging: true },
       execute: (_input, options) => read('/jobs', options),

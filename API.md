@@ -131,6 +131,8 @@ Create a job:
   "name": "Check uptime",
   "script": "uptime",
   "host_ids": ["HOST_ID"],
+  "host_tags": ["linux"],
+  "excluded_host_ids": [],
   "execution_mode": "sequential",
   "stop_on_failure": true,
   "run_as_sudo": false,
@@ -138,6 +140,16 @@ Create a job:
   "secrets": []
 }
 ```
+
+Targets combine ordered `host_ids` and `host_tags` (either may be empty). Each run
+resolves tags against current host membership, includes each host once, and appends
+additional tag matches in host-name/ID order after individual hosts. Tags match exactly;
+matching any selected tag is enough. Runs snapshot their targets, so later tag changes
+affect only future runs. At most 1000 hosts may resolve; no matches returns an error.
+`excluded_host_ids` excludes up to 1000 distinct existing hosts from tag matches
+without clearing tags; new matching hosts still join future runs. Exclusions cannot
+overlap `host_ids`. Omitted exclusions or `[]` clear them on save. Rechecking an
+excluded host removes its exclusion. Host limits apply after exclusions.
 
 `execution_mode` accepts `sequential` or `parallel`. Scripts are limited to 64 KiB
 UTF-8. Cron uses five fields in the server timezone. Omit `schedule` or `secrets`
@@ -244,3 +256,14 @@ escaped as string contents. Templates are limited to 64 KiB, rendered bodies to
 1 MiB. Delivery runs independently of SSH execution. Failures are logged with
 sanitized errors, without changing the job result. There are no automatic retries,
 durable queue, or restart replay; shutdown cancels pending deliveries.
+
+### Resource list pagination
+
+Users, credentials, hosts, jobs, and notification lists accept optional `limit`
+(1-200), `cursor` (the previous `page.next_cursor`), and `q` (case-insensitive
+search). Hosts also accept an exact `tag` filter. Responses include
+`page: {total, matched, next_cursor}`; an empty cursor ends the list. Host pages
+also include the full `tags` list. Omit `limit` for the complete list. Jobs search
+includes effective host names when the key also has `hosts:read`. List reads can
+select up to 100 comma-separated `ids`; authorization and secret protection are
+unchanged.

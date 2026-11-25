@@ -19,13 +19,26 @@ func TestJobDevelopmentAPIAndMCP(t *testing.T) {
 	w := h.bearerRequest("POST", "/api/development/v1/hosts", token, hostBody(), nil)
 	expect(t, w, 201)
 	host := responseHost(t, w)
+	excludedBody := hostBody()
+	excludedBody["name"] = "Excluded host"
+	w = h.bearerRequest("POST", "/api/development/v1/hosts", token, excludedBody, nil)
+	expect(t, w, 201)
+	excluded := responseHost(t, w)
 	input := jobBody(host.ID)
+	input["host_tags"] = []string{"dynamic"}
+	input["excluded_host_ids"] = []string{excluded.ID}
 	input["secrets"] = []map[string]any{{"name": "API_TOKEN", "value": "mcp-sensitive-job-value"}}
 	expect(t, h.bearerRequest("POST", "/api/development/v1/jobs", readToken, input, nil), 403)
 	expect(t, h.bearerRequest("GET", "/api/development/v1/jobs", unrelatedToken, nil, nil), 403)
 	w = h.bearerRequest("POST", "/api/development/v1/jobs", token, input, nil)
 	expect(t, w, 201)
 	job := responseJob(t, w)
+	if len(job.ExcludedHostIDs) != 1 || job.ExcludedHostIDs[0] != excluded.ID {
+		t.Fatal("development API lost host exclusions")
+	}
+	if len(job.HostTags) != 1 || job.HostTags[0] != "dynamic" {
+		t.Fatal("development API lost dynamic tags")
+	}
 	if strings.Contains(w.Body.String(), "mcp-sensitive-job-value") || len(job.SecretNames) != 1 {
 		t.Fatal("API secret readback")
 	}
@@ -39,7 +52,7 @@ func TestJobDevelopmentAPIAndMCP(t *testing.T) {
 	}
 	tools := h.mcpRequest(t, token, "tools/list", map[string]any{})
 	encoded, _ := json.Marshal(tools)
-	for _, name := range []string{"list_jobs", "save_job", "delete_job"} {
+	for _, name := range []string{"list_jobs", "save_job", "delete_job", "excluded_host_ids"} {
 		if !strings.Contains(string(encoded), name) {
 			t.Fatalf("missing MCP tool %s", name)
 		}
@@ -60,6 +73,9 @@ func TestJobDevelopmentAPIAndMCP(t *testing.T) {
 	encoded, _ = json.Marshal(result)
 	if strings.Contains(string(encoded), "mcp-sensitive-job-value") || strings.Contains(string(encoded), `"isError":true`) || !strings.Contains(string(encoded), `"run_as_sudo":true`) || !strings.Contains(string(encoded), "MCP updated job") {
 		t.Fatalf("MCP save failed: %s", encoded)
+	}
+	if !strings.Contains(string(encoded), excluded.ID) {
+		t.Fatal("MCP save lost exclusion")
 	}
 	expect(t, h.bearerRequest("PUT", "/api/development/v1/jobs/"+job.ID, token, jobBody(host.ID), nil), 400)
 	expect(t, h.bearerRequest("DELETE", "/api/development/v1/hosts/"+host.ID, token, map[string]any{"version": 1}, nil), 409)
@@ -91,6 +107,7 @@ func TestJobDevelopmentAPIAndMCP(t *testing.T) {
 	expect(t, w, 200)
 	expect(t, h.bearerRequest("DELETE", "/api/development/v1/jobs/"+created.ID, token, map[string]any{"version": 2}, nil), 204)
 	expect(t, h.bearerRequest("DELETE", "/api/development/v1/hosts/"+host.ID, token, map[string]any{"version": 1}, nil), 204)
+	expect(t, h.bearerRequest("DELETE", "/api/development/v1/hosts/"+excluded.ID, token, map[string]any{"version": 1}, nil), 204)
 	key, revokedToken := h.issueKey(t, store.ScopeJobsWrite)
 	if err := h.store.RevokeLocalAPIKey(context.Background(), key.ID); err != nil {
 		t.Fatal(err)

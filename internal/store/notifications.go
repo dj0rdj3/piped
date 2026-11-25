@@ -257,20 +257,7 @@ func (s *Store) DeleteNotificationTarget(ctx context.Context, actor Actor, id st
 }
 
 func jobNotificationIDs(ctx context.Context, tx *transaction, jobID string) ([]string, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT target_id FROM job_notification_targets WHERE job_id = ? ORDER BY target_id`, jobID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	ids := []string{}
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		ids = append(ids, id)
-	}
-	return ids, rows.Err()
+	return tx.queryStrings(ctx, `SELECT target_id FROM job_notification_targets WHERE job_id = ? ORDER BY target_id`, jobID)
 }
 
 func saveJobNotifications(ctx context.Context, tx *transaction, job *Job, create bool, source *JobCopy) error {
@@ -282,22 +269,7 @@ func saveJobNotifications(ctx context.Context, tx *transaction, job *Job, create
 		case !create:
 			job.NotificationTargetIDs, err = jobNotificationIDs(ctx, tx, job.ID)
 		default:
-			rows, queryErr := tx.QueryContext(ctx, `SELECT id FROM notification_targets WHERE default_enabled = 1 AND enabled = 1 ORDER BY id`)
-			if queryErr != nil {
-				return queryErr
-			}
-			job.NotificationTargetIDs = []string{}
-			for rows.Next() {
-				var id string
-				if err = rows.Scan(&id); err != nil {
-					break
-				}
-				job.NotificationTargetIDs = append(job.NotificationTargetIDs, id)
-			}
-			if err == nil {
-				err = rows.Err()
-			}
-			rows.Close()
+			job.NotificationTargetIDs, err = tx.queryStrings(ctx, `SELECT id FROM notification_targets WHERE default_enabled = 1 AND enabled = 1 ORDER BY id`)
 		}
 		if err != nil {
 			return err

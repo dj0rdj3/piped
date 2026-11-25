@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"slices"
+	"strings"
 	"time"
 
 	"piped/internal/secrets"
@@ -84,13 +85,24 @@ func (s *Store) CreateRun(ctx context.Context, actor Actor, id, jobID string, ve
 
 // All execution sources share the same transactional snapshots and writes.
 func snapshotRun(ctx context.Context, tx *transaction, id string, job Job, trigger string, scheduledAt int64) (Run, []Connection, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT h.id, h.name, h.address, h.port, h.username, COALESCE(h.credential_id, ''), h.run_as_sudo, h.encrypted_password, h.encrypted_sudo_password, c.encrypted_secret
-        FROM job_hosts j JOIN hosts h ON h.id = j.host_id LEFT JOIN credentials c ON c.id = h.credential_id
-        WHERE j.job_id = ? ORDER BY j.position`, job.ID)
+	ids, err := jobHostIDs(ctx, tx, job.ID)
 	if err != nil {
 		return Run{}, nil, err
 	}
-	connections := []Connection{}
+	positions := make(map[string]int, len(ids))
+	args := make([]any, len(ids))
+	for index, hostID := range ids {
+		positions[hostID] = index
+		args[index] = hostID
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT h.id, h.name, h.address, h.port, h.username, COALESCE(h.credential_id, ''), h.run_as_sudo, h.encrypted_password, h.encrypted_sudo_password, c.encrypted_secret
+		FROM hosts h LEFT JOIN credentials c ON c.id = h.credential_id
+		WHERE h.id IN (`+strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")+`)`, args...)
+	if err != nil {
+		return Run{}, nil, err
+	}
+	connections := make([]Connection, len(ids))
+	count := 0
 	for rows.Next() {
 		var c Connection
 		if err := rows.Scan(&c.Host.ID, &c.Host.Name, &c.Host.Address, &c.Host.Port, &c.Host.Username, &c.Host.CredentialID, &c.Host.RunAsSudo, &c.Password, &c.SudoPassword, &c.Credential); err != nil {
@@ -98,12 +110,16 @@ func snapshotRun(ctx context.Context, tx *transaction, id string, job Job, trigg
 			return Run{}, nil, err
 		}
 		c.RunAsSudo = job.RunAsSudo && c.Host.RunAsSudo && c.Host.Username != "root"
-		connections = append(connections, c)
+		connections[positions[c.Host.ID]] = c
+		count++
 	}
 	err = rows.Err()
 	rows.Close()
 	if err != nil {
 		return Run{}, nil, err
+	}
+	if count != len(ids) {
+		return Run{}, nil, ErrJobHost
 	}
 	environment, err := jobSecretValues(ctx, tx, job.ID)
 	if err != nil {

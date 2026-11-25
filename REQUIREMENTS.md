@@ -1422,3 +1422,145 @@ registration through normal completion and lookup errors, verify maintenance sta
 deferred while an error is reported without holding admission locks, and verify
 duplicate/cancelled entries cannot clear another batch's registration. Run targeted
 lint/race checks; avoid unnecessary production abstractions or dependencies.
+
+R147 (2026-11-25): Add Select all to the job's host picker, for all hosts or the
+current tag/search matches. Provide an explicit tag filter. Preserve selected hosts
+outside the filter and their execution order, append new matches without duplicates,
+and disable bulk selection when there are no matches or all matches are selected.
+Keep individual selection, ordering controls, unsaved-change protection, and normal
+job validation and saving. No dependencies or backend/API changes.
+
+R148 (2026-11-25): Change Select all to Deselect all when every matching host is
+selected. Deselect only the current tag/search matches, retaining hidden selections
+and their order. Keep the button disabled only when there are no matches. This
+supersedes R147's disabled state when all matching hosts are already selected.
+
+R149 (2026-11-25): Jobs may target saved host tags alongside individual host IDs,
+including tag-only jobs. Resolve any matching tag afresh for every manual/scheduled
+run inside the admission transaction; snapshot connections and history as before.
+Preserve explicit-host order, append additional tag matches in name/ID order, and
+deduplicate overlaps. Tag changes and new matching hosts affect only future runs.
+Allow saved tags with no current matches; reject runs resolving to zero or over 1000
+hosts with a clear error. Retain exact, case-sensitive host-tag matching. Expose
+host_tags in browser forms, copies, listings, and production/development API and
+MCP/WebMCP metadata. Add non-destructive table migrations for supported databases;
+preserve deployment data, scopes, encryption, scheduling, and execution safeguards.
+
+R150 (2026-11-25): Clearly identify hosts included through selected job tags in
+the host picker. Mark tag-derived inclusion and show its matching tags while
+preserving independent individual selection, ordering, filtering, and saved targets.
+No backend, dependencies, or configuration changes.
+
+R151 (2026-11-25): Show a regular checkmark for hosts included through job tags,
+using the existing inclusion label to explain the source. Keep individual host
+selection independent, with tag-included hosts remaining checked after removing
+their individual selection.
+
+R152 (2026-11-25): Bulk host selection counts individual and tag-derived inclusion.
+Select all adds only currently excluded matches, preserving dynamic tags. Deselect
+all removes individual matches and contributing tag selections. Preserve currently
+included hosts outside the filters, selecting them individually if their remaining
+tags no longer include them; retain unrelated tags and existing individual order.
+Keep empty-filter operations inert. No backend or configuration changes.
+
+R153 (2026-11-25): Unchecking a host must exclude it even when selected tags
+include it. Use the same tag-removal and other-host preservation behavior as bulk
+deselection, retaining unrelated tags and individual order. This supersedes R151's
+requirement to keep a tag-included host checked after removing its individual
+selection. No backend, dependency, or configuration changes.
+
+R154 (2026-11-25): Persist per-job excluded_host_ids. Unchecking individual or
+filtered hosts excludes them without clearing selected tags or converting other
+tag members to individual targets. Rechecking/Select all clears only matching
+exclusions. Future tag members remain included; exclusions take precedence across
+overlapping tags and are applied before run-size checks for manual/scheduled runs.
+Preserve snapshots, individual order, and hidden selections. Show excluded state
+in the picker and use effective targets in listings. Include exclusions in forms,
+copies, APIs, MCP/WebMCP metadata, validation, and non-destructive migrations on all
+supported databases. Limit exclusions to 1000 existing distinct hosts and reject
+overlap with individual selections. No new dependencies or environment settings.
+This supersedes R152/R153's contributing-tag removal behavior.
+
+R155 (2026-11-25): With no host tag or search filter, Deselect all clears individual
+hosts, selected tags (including tags without current matches), and exclusions.
+With either filter active, retain tag selections and deselect only matching hosts
+using exclusions, preserving hidden selections. No backend or configuration changes.
+
+R156 (2026-11-25): When unchecking the last included member of a selected tag,
+deselect that tag instead of disabling the host checkbox or excluding every member.
+Apply this to individual and filtered bulk deselection, including overlapping tags.
+Remove exclusions tied only to the deselected tags, retaining exclusions needed by
+remaining tags, unrelated tags (including empty future tags), and individual order.
+No backend, dependency, or configuration changes.
+
+R157 (2026-11-25): Selecting a job target tag clears exclusions for all its current
+hosts, including hosts hidden by picker filters or overlapping another selected
+tag. Preserve exclusions outside that tag and existing individual order. Loading
+saved jobs and deselecting tags must not clear exclusions. No backend, dependency,
+or configuration changes.
+
+R158 (2026-11-25): Show a native partial-selection mark on selected target tags
+when current members are excluded, considering all hosts regardless of picker
+filters. Clicking a partial tag selects all its members by clearing their
+exclusions; clicking a fully selected tag deselects it. Keep ordinary checkmarks
+on included host rows. No backend, dependency, or configuration changes.
+
+R159 (2026-11-25): Show the effective total as "Hosts (N selected)" in the job
+picker: individual and tag-matched hosts combined, deduplicated and excluding
+excluded hosts. Count all selections regardless of picker filters and update as
+selections change. No backend, dependency, or configuration changes.
+
+R160 (2026-11-25): Combine tag and individual host selection into one bordered,
+scrollable list, with a small "tag" or "host" pill beside each name. Remove separate
+tag/host sections and their helper text. Search and tag filters apply to both row
+types. Preserve host totals, partial tags, exclusions, future tag membership, host
+ordering, bulk-selection behavior, and saved empty tags. No backend, dependency,
+or configuration changes.
+
+R161 (2026-11-25): Remove the tag filter dropdown from the unified job host picker
+and remove its unused state. Use the shared search bar as the only filter, with
+Select all/Deselect all beside it. Keep name/address/tag searching, matching tag
+rows, total counts, exclusions, and full deselection when search is empty.
+No backend, dependency, or configuration changes.
+
+R162 (2026-11-25): Simplify recent frontend and backend changes without losing
+functionality or weakening security. Share effective job target resolution across
+frontend views and consolidate transactional string-list reads. Preserve selection
+semantics, validation, authorization, encryption, ordering, snapshots, and scheduling.
+No new dependencies, configuration settings, or schema changes.
+
+
+R163 (2026-11-25): All six resource-page tables use infinite scrolling, with an
+initial batch sized to the available viewport plus a scrolling buffer. Fetch more
+before reaching the bottom, serialize fast-scroll requests, cancel superseded
+filter/refresh reads, and search/filter the whole collection. Preserve full-list
+reads for form choices and integrations, full counts, job summaries and execution
+restoration. Show a spinner while requests are pending, including slow servers;
+show a retryable error on unavailable/timed-out requests without discarding loaded
+rows. Verify 500 of each resource, rapid scrolling, viewport changes, failures, and
+cleanup through authenticated development interfaces. No new dependencies/settings.
+
+
+R164 (2026-11-25): Keep table loading indicators out of view during normal scrolling
+against a responsive server. Increase the initial buffer to one viewport and begin
+opportunistic prefetch on the first downward scroll movement, maintaining at least
+three viewports ahead rather than waiting near the last loaded row. Retain the
+furthest scroll target during pending requests so fast scrolling refills the buffer
+without duplicate requests. Keep visible loading/error feedback when the server is
+slow or unavailable, cancellation, filtering, and bounded page sizes.
+
+
+R165 (2026-11-25): Simplify the recent frontend/backend pagination and prefetch
+implementation while preserving behavior and security. Use cancellation as the
+single request-lifecycle authority where possible, simplify authorized job-host
+search, and retain stable cursors, scope checks, viewport buffers, errors/retries,
+and execution restoration. Preserve the 500 credentials requested for personal
+testing, existing records/settings, and dependencies. Verify relevant regressions
+and the authenticated development interfaces.
+
+R166 (2026-11-25): Review frontend and backend simplification within fifteen
+minutes, with extensive regression testing. Reduce repeated job-list metadata
+reads and host-picker work while preserving ordering, dynamic tags, exclusions,
+authorization, secret non-disclosure, and all existing features. Keep production
+user API and internal development API/MCP/WebMCP isolated. Preserve ongoing
+uncommitted work, deployment data, configuration, dependencies, and caches.

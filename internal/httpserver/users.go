@@ -16,8 +16,9 @@ func (s *Server) users(w http.ResponseWriter, r *http.Request, actor store.Actor
 	if err != nil {
 		return err
 	}
-	response.JSON(w, 200, map[string]any{"users": users})
-	return nil
+	return listResponse(w, r, "users", users, func(item store.User) listEntry {
+		return listEntry{id: strconv.FormatInt(item.ID, 10), name: item.Username, search: item.Username}
+	}, nil)
 }
 
 func (s *Server) reauthenticate(w http.ResponseWriter, r *http.Request, actor store.Actor, password string) error {

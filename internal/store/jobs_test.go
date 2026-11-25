@@ -122,3 +122,46 @@ func TestJobScheduleWatermarkAndSecretRollback(t *testing.T) {
 		t.Fatalf("changed schedule did not reset only its activation time: %d, %d, %v", after, last, err)
 	}
 }
+
+func TestJobListingKeepsRelationsOrderedAndSeparated(t *testing.T) {
+	db, actor, original := scheduledJobFixture(t)
+	ctx := context.Background()
+	for _, id := range []string{"alpha", "zulu", "excluded"} {
+		if _, err := db.SaveHost(ctx, actor, Host{ID: id, Name: id, Address: "localhost", Port: 22, Username: "fixture"}, []byte("encrypted"), nil, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, id := range []string{"zulu", "alpha"} {
+		if _, err := db.SaveNotificationTarget(ctx, actor, NotificationTarget{
+			ID: id, Name: id, Type: "webhook", Method: "POST", ContentType: "text/plain",
+			Endpoint: &NotificationEndpoint{URL: "https://example.invalid"},
+		}, true, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	original.HostIDs = []string{"zulu", "host", "alpha"}
+	original.HostTags = []string{"production", "web"}
+	original.ExcludedHostIDs = []string{"excluded"}
+	original.NotificationTargetIDs = []string{"zulu", "alpha"}
+	original, err := db.SaveJob(ctx, actor, original, []JobSecret{
+		{Name: "Z_LAST", Ciphertext: []byte("secret one")},
+		{Name: "A_FIRST", Ciphertext: []byte("secret two")},
+	}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := db.SaveJob(ctx, actor, Job{
+		ID: "other", Name: "Another job", Script: "true", HostIDs: []string{}, HostTags: []string{"future"},
+		ExecutionMode: "parallel", NotificationTargetIDs: []string{},
+	}, nil, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed, err := db.Jobs(ctx, actor)
+	if err != nil || !reflect.DeepEqual(listed, []Job{other, original}) {
+		t.Fatalf("listing changed ordered relation metadata: %+v; %v", listed, err)
+	}
+	if _, err := db.Jobs(ctx, Actor{}); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("listing bypassed authorization: %v", err)
+	}
+}

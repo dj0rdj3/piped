@@ -3,6 +3,7 @@ package httpserver
 import (
 	"encoding/hex"
 	"net/http"
+	"strings"
 
 	"piped/internal/credentials"
 	"piped/internal/httpserver/response"
@@ -23,8 +24,9 @@ func (s *Server) listCredentials(w http.ResponseWriter, r *http.Request, actor s
 	if err != nil {
 		return response.CredentialFailure(err)
 	}
-	response.JSON(w, 200, map[string]any{"credentials": items})
-	return nil
+	return listResponse(w, r, "credentials", items, func(item store.Credential) listEntry {
+		return listEntry{id: item.ID, name: item.Name, search: strings.Join([]string{item.Name, item.Fingerprint, item.Algorithm}, " ")}
+	}, nil)
 }
 
 func (s *Server) createCredential(w http.ResponseWriter, r *http.Request, actor store.Actor) error {

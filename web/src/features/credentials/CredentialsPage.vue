@@ -1,10 +1,9 @@
 <script setup>
-import { computed, onUnmounted, ref, watch } from 'vue';
+import { onUnmounted, ref, watch } from 'vue';
 import {
   Check,
   Copy,
   KeyRound,
-  LoaderCircle,
   Pencil,
   Plus,
   RefreshCw,
@@ -17,13 +16,14 @@ import AppButton from '../../components/ui/AppButton.vue';
 import PageHeading from '../../components/ui/PageHeading.vue';
 import StatusMessage from '../../components/ui/StatusMessage.vue';
 import { api } from '../../lib/api.js';
-import { usePageLoad } from '../../composables/usePageLoad.js';
+import { useInfiniteTable } from '../../composables/useInfiniteTable.js';
+import TableLoadState from '../../components/ui/TableLoadState.vue';
 
 const emit = defineEmits(['signed-out', 'auth-error', 'open-navigation']);
 const props = defineProps({ requestedAction: { type: Object, default: null } });
-const credentials = ref([]);
 const query = ref('');
 const notice = ref('');
+const actionError = ref('');
 const dialog = ref(null);
 const copying = ref(false);
 const copiedID = ref('');
@@ -46,13 +46,6 @@ const saveMessages = {
   rename: 'Credential renamed.',
   delete: 'Credential removed.',
 };
-const filtered = computed(() => {
-  const search = query.value.toLowerCase();
-  return credentials.value.filter((credential) => {
-    const searchable = [credential.name, credential.fingerprint, credential.algorithm].join(' ');
-    return searchable.toLowerCase().includes(search);
-  });
-});
 
 onUnmounted(() => {
   mounted = false;
@@ -64,7 +57,7 @@ async function copyPublicKey(credential) {
     return;
   }
   copying.value = true;
-  error.value = '';
+  actionError.value = '';
   notice.value = '';
   try {
     await navigator.clipboard.writeText(credential.public_key);
@@ -77,19 +70,29 @@ async function copyPublicKey(credential) {
     }
   } catch {
     if (mounted) {
-      error.value = 'Could not copy the public key. Open Public key to copy it manually.';
+      actionError.value = 'Could not copy the public key. Open Public key to copy it manually.';
     }
   } finally {
     copying.value = false;
   }
 }
 
-const { load, loading, error } = usePageLoad(
-  () => api('/credentials'),
-  (result) => {
-    credentials.value = result.credentials;
-  },
+const {
+  rows: credentials,
+  load,
+  loading,
+  error,
+  total,
+  matched,
+  table,
+  sentinel,
+  nextCursor,
+  retry,
+} = useInfiniteTable(
+  (params, signal) => api(`/credentials?${params}`, { signal }),
+  'credentials',
   () => emit('signed-out'),
+  { filters: () => ({ q: query.value }) },
 );
 
 async function saved(credential) {
@@ -131,18 +134,10 @@ function keyLabel(algorithm) {
     </PageHeading>
     <StatusMessage v-if="notice">{{ notice }}</StatusMessage>
     <StatusMessage
-      v-if="error"
+      v-if="actionError"
       variant="error"
     >
-      {{ error }}
-      <template #action>
-        <AppButton
-          variant="text"
-          @click="load"
-        >
-          Retry
-        </AppButton>
-      </template>
+      {{ actionError }}
     </StatusMessage>
     <section
       class="overflow-hidden rounded-[.65rem] border border-border bg-surface shadow-sm shadow-black/5 dark:shadow-black/20"
@@ -151,7 +146,7 @@ function keyLabel(algorithm) {
     >
       <div class="flex flex-wrap items-center justify-between gap-3 px-4 py-3.5">
         <span class="text-sm text-muted">
-          {{ credentials.length }} {{ credentials.length === 1 ? 'credential' : 'credentials' }}
+          {{ total }} {{ total === 1 ? 'credential' : 'credentials' }}
         </span>
         <div class="flex min-w-0 items-center gap-2 max-[560px]:w-full">
           <AppButton
@@ -190,7 +185,10 @@ function keyLabel(algorithm) {
           </div>
         </div>
       </div>
-      <div class="relative overflow-x-auto">
+      <div
+        ref="table"
+        class="relative overflow-x-auto"
+      >
         <table class="w-full min-w-[36rem] border-collapse text-left whitespace-nowrap">
           <thead>
             <tr>
@@ -222,7 +220,7 @@ function keyLabel(algorithm) {
           </thead>
           <tbody class="[&>tr:last-child>td]:border-b-0">
             <tr
-              v-for="credential in filtered"
+              v-for="credential in credentials"
               :key="credential.id"
               class="h-16 hover:bg-surface-hover [&>td]:align-middle"
             >
@@ -305,19 +303,7 @@ function keyLabel(algorithm) {
                 </div>
               </td>
             </tr>
-            <tr v-if="loading && !credentials.length">
-              <td
-                colspan="4"
-                class="p-12 text-center text-sm text-muted"
-              >
-                <LoaderCircle
-                  class="mr-2 inline align-middle motion-safe:animate-spin"
-                  :size="20"
-                />
-                Loading&hellip;
-              </td>
-            </tr>
-            <tr v-else-if="!filtered.length">
+            <tr v-if="!loading && !error && !credentials.length">
               <td
                 colspan="4"
                 class="p-12 text-center text-sm text-muted"
@@ -336,7 +322,17 @@ function keyLabel(algorithm) {
         v-if="query"
         class="border-t border-border px-4 py-3 text-xs text-muted"
       >
-        {{ filtered.length }} of {{ credentials.length }} credentials
+        {{ matched }} of {{ total }} credentials
+      </div>
+      <div
+        v-if="loading || error || nextCursor"
+        ref="sentinel"
+      >
+        <TableLoadState
+          :loading="loading"
+          :error="error"
+          @retry="retry"
+        />
       </div>
     </section>
     <CredentialDialog

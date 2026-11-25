@@ -44,7 +44,7 @@ func HostFailure(err error) error {
 
 func JobFailure(err error) error {
 	switch {
-	case errors.Is(err, jobs.ErrInput), errors.Is(err, store.ErrJobHost), errors.Is(err, store.ErrJobSecret),
+	case errors.Is(err, jobs.ErrInput), errors.Is(err, store.ErrJobHost), errors.Is(err, store.ErrJobTargets), errors.Is(err, store.ErrJobSecret),
 		errors.Is(err, store.ErrJobNotification), errors.Is(err, store.ErrJobNotificationLimit):
 		return Fail(400, err.Error())
 	case errors.Is(err, store.ErrJobName), errors.Is(err, store.ErrJobChanged):

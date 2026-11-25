@@ -12,7 +12,10 @@ var (
 	ErrJobChanged = errors.New("job changed; refresh and try again")
 	ErrJobHost    = errors.New("a selected host no longer exists; refresh and try again")
 	ErrHostInUse  = errors.New("host is assigned to a job; remove it from the job first")
+	ErrJobTargets = errors.New("job targets must match between 1 and 1000 hosts")
 )
+
+const MaxJobHosts = 1000
 
 type JobSchedule struct {
 	Cron    string `json:"cron"`
@@ -28,6 +31,8 @@ type Job struct {
 	Name                  string         `json:"name"`
 	Script                string         `json:"script"`
 	HostIDs               []string       `json:"host_ids"`
+	HostTags              []string       `json:"host_tags"`
+	ExcludedHostIDs       []string       `json:"excluded_host_ids"`
 	ExecutionMode         string         `json:"execution_mode"`
 	RunAsSudo             bool           `json:"run_as_sudo"`
 	StopOnFailure         bool           `json:"stop_on_failure"`
@@ -50,7 +55,7 @@ type JobCopy struct {
 const jobColumns = `id, name, script, execution_mode, stop_on_failure, version, created_at, run_as_sudo, schedule_cron, schedule_enabled`
 
 func scanJob(row interface{ Scan(...any) error }) (Job, error) {
-	job := Job{NotificationTargetIDs: []string{}, HostIDs: []string{}, SecretNames: []string{}, Schedule: &JobSchedule{}}
+	job := Job{NotificationTargetIDs: []string{}, HostIDs: []string{}, HostTags: []string{}, ExcludedHostIDs: []string{}, SecretNames: []string{}, Schedule: &JobSchedule{}}
 	err := row.Scan(&job.ID, &job.Name, &job.Script, &job.ExecutionMode, &job.StopOnFailure, &job.Version, &job.CreatedAt, &job.RunAsSudo, &job.Schedule.Cron, &job.Schedule.Enabled)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Job{}, ErrNotFound
@@ -85,58 +90,38 @@ func (s *Store) Jobs(ctx context.Context, actor Actor) ([]Job, error) {
 	if err := rows.Close(); err != nil {
 		return nil, err
 	}
-	rows, err = tx.QueryContext(ctx, `SELECT job_id, host_id FROM job_hosts ORDER BY job_id, position`)
+	// Read ordered public relation values together, without loading ciphertext.
+	rows, err = tx.QueryContext(ctx, `SELECT job_id, host_id AS value, 'host' AS kind, position AS sort_order FROM job_hosts
+		UNION ALL SELECT job_id, tag, 'tag', 0 FROM job_host_tags
+		UNION ALL SELECT job_id, host_id, 'exclusion', 0 FROM job_host_exclusions
+		UNION ALL SELECT job_id, name, 'secret', 0 FROM job_secrets
+		UNION ALL SELECT job_id, target_id, 'notification', 0 FROM job_notification_targets
+		ORDER BY kind, job_id, sort_order, value`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var jobID, hostID string
-		if err := rows.Scan(&jobID, &hostID); err != nil {
+		var jobID, value, kind string
+		var position int
+		if err := rows.Scan(&jobID, &value, &kind, &position); err != nil {
 			return nil, err
 		}
-		index := indices[jobID]
-		jobs[index].HostIDs = append(jobs[index].HostIDs, hostID)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	rows, err = tx.QueryContext(ctx, `SELECT job_id,name FROM job_secrets ORDER BY job_id,name`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var jobID, name string
-		if err := rows.Scan(&jobID, &name); err != nil {
-			return nil, err
+		job := &jobs[indices[jobID]]
+		switch kind {
+		case "host":
+			job.HostIDs = append(job.HostIDs, value)
+		case "tag":
+			job.HostTags = append(job.HostTags, value)
+		case "exclusion":
+			job.ExcludedHostIDs = append(job.ExcludedHostIDs, value)
+		case "secret":
+			job.SecretNames = append(job.SecretNames, value)
+		case "notification":
+			job.NotificationTargetIDs = append(job.NotificationTargetIDs, value)
 		}
-		index := indices[jobID]
-		jobs[index].SecretNames = append(jobs[index].SecretNames, name)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	rows, err = tx.QueryContext(ctx, `SELECT job_id, target_id FROM job_notification_targets ORDER BY job_id, target_id`)
-	if err != nil {
-		return nil, err
-	}
-	for rows.Next() {
-		var jobID, targetID string
-		if err := rows.Scan(&jobID, &targetID); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		jobs[indices[jobID]].NotificationTargetIDs = append(jobs[indices[jobID]].NotificationTargetIDs, targetID)
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
 		return nil, err
 	}
 	if err := rows.Close(); err != nil {
@@ -190,6 +175,12 @@ func (s *Store) saveJob(ctx context.Context, actor Actor, job Job, secretChanges
 		return Job{}, err
 	}
 	defer tx.Rollback()
+	if job.HostTags == nil {
+		job.HostTags = []string{}
+	}
+	if job.ExcludedHostIDs == nil {
+		job.ExcludedHostIDs = []string{}
+	}
 	var copiedSecrets []JobSecret
 	if source != nil {
 		if err := authorize(ctx, tx, actor, ScopeJobsRead); err != nil {
@@ -258,6 +249,25 @@ func (s *Store) saveJob(ctx context.Context, actor Actor, job Job, secretChanges
 	}
 	for position, id := range job.HostIDs {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO job_hosts (job_id, host_id, position) VALUES (?, ?, ?)`, job.ID, id, position); err != nil {
+			if foreignKeyViolation(err) {
+				return Job{}, ErrJobHost
+			}
+			return Job{}, err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM job_host_tags WHERE job_id = ?`, job.ID); err != nil {
+		return Job{}, err
+	}
+	for _, tag := range job.HostTags {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO job_host_tags (job_id, tag) VALUES (?, ?)`, job.ID, tag); err != nil {
+			return Job{}, err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM job_host_exclusions WHERE job_id = ?`, job.ID); err != nil {
+		return Job{}, err
+	}
+	for _, id := range job.ExcludedHostIDs {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO job_host_exclusions (job_id, host_id) VALUES (?, ?)`, job.ID, id); err != nil {
 			if foreignKeyViolation(err) {
 				return Job{}, ErrJobHost
 			}

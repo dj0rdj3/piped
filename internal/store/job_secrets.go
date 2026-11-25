@@ -15,20 +15,7 @@ type JobSecret struct {
 }
 
 func jobSecretNames(ctx context.Context, tx *transaction, jobID string) ([]string, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT name FROM job_secrets WHERE job_id = ? ORDER BY name`, jobID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	names := []string{}
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			return nil, err
-		}
-		names = append(names, name)
-	}
-	return names, rows.Err()
+	return tx.queryStrings(ctx, `SELECT name FROM job_secrets WHERE job_id = ? ORDER BY name`, jobID)
 }
 
 func jobSecretValues(ctx context.Context, tx *transaction, jobID string) ([]JobSecret, error) {

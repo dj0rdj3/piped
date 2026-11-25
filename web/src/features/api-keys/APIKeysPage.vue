@@ -1,31 +1,42 @@
 <script setup>
-import { computed, ref } from 'vue';
-import { KeyRound, LoaderCircle, Plus, RefreshCw, Search, Trash2 } from '@lucide/vue';
+import { ref } from 'vue';
+import { KeyRound, Plus, RefreshCw, Search, Trash2 } from '@lucide/vue';
 import APIKeyDialog from './APIKeyDialog.vue';
 import AppButton from '../../components/ui/AppButton.vue';
 import PageHeading from '../../components/ui/PageHeading.vue';
 import StatusMessage from '../../components/ui/StatusMessage.vue';
 import { api } from '../../lib/api.js';
-import { usePageLoad } from '../../composables/usePageLoad.js';
+import { useInfiniteTable } from '../../composables/useInfiniteTable.js';
+import TableLoadState from '../../components/ui/TableLoadState.vue';
 import { formatTimestamp } from '../../lib/date-time.js';
 
 const emit = defineEmits(['signed-out', 'auth-error', 'open-navigation']);
-const keys = ref([]);
 const scopes = ref([]);
 const query = ref('');
-const filteredKeys = computed(() => {
-  const search = query.value.toLowerCase();
-  return keys.value.filter((key) => key.name.toLowerCase().includes(search));
-});
+
 const notice = ref('');
 const dialog = ref(null);
-const { load, loading, error } = usePageLoad(
-  () => api('/api-keys'),
-  (result) => {
-    keys.value = result.keys;
-    scopes.value = result.scopes;
-  },
+const {
+  rows: keys,
+  load,
+  loading,
+  error,
+  total,
+  matched,
+  table,
+  sentinel,
+  nextCursor,
+  retry,
+} = useInfiniteTable(
+  (params, signal) => api(`/api-keys?${params}`, { signal }),
+  'keys',
   () => emit('signed-out'),
+  {
+    filters: () => ({ q: query.value }),
+    applyResult: (result) => {
+      scopes.value = result.scopes;
+    },
+  },
 );
 
 function saved() {
@@ -57,20 +68,6 @@ function saved() {
       </AppButton>
     </PageHeading>
     <StatusMessage v-if="notice">{{ notice }}</StatusMessage>
-    <StatusMessage
-      v-if="error"
-      variant="error"
-    >
-      {{ error }}
-      <template #action>
-        <AppButton
-          variant="text"
-          @click="load"
-        >
-          Retry
-        </AppButton>
-      </template>
-    </StatusMessage>
     <section
       class="overflow-hidden rounded-[.65rem] border border-border bg-surface shadow-sm shadow-black/5 dark:shadow-black/20"
       aria-labelledby="api-keys-title"
@@ -78,7 +75,7 @@ function saved() {
     >
       <div class="flex flex-wrap items-center justify-between gap-3 px-4 py-3.5">
         <span class="text-sm text-muted">
-          {{ keys.length }} {{ keys.length === 1 ? 'API key' : 'API keys' }}
+          {{ total }} {{ total === 1 ? 'API key' : 'API keys' }}
         </span>
         <div class="flex min-w-0 items-center gap-2 max-[560px]:w-full">
           <AppButton
@@ -117,7 +114,10 @@ function saved() {
           </div>
         </div>
       </div>
-      <div class="relative overflow-x-auto">
+      <div
+        ref="table"
+        class="relative overflow-x-auto"
+      >
         <table class="w-full min-w-[36rem] border-collapse text-left whitespace-nowrap">
           <thead>
             <tr>
@@ -154,19 +154,7 @@ function saved() {
             </tr>
           </thead>
           <tbody class="[&>tr:last-child>td]:border-b-0">
-            <tr v-if="loading && !keys.length">
-              <td
-                colspan="5"
-                class="p-12 text-center text-sm text-muted"
-              >
-                <LoaderCircle
-                  class="mr-2 inline align-middle motion-safe:animate-spin"
-                  :size="20"
-                />
-                Loading&hellip;
-              </td>
-            </tr>
-            <tr v-else-if="!filteredKeys.length">
+            <tr v-if="!loading && !error && !keys.length">
               <td
                 colspan="5"
                 class="p-12 text-center text-sm text-muted"
@@ -175,7 +163,7 @@ function saved() {
               </td>
             </tr>
             <tr
-              v-for="key in filteredKeys"
+              v-for="key in keys"
               :key="key.id"
               class="h-16 hover:bg-surface-hover [&>td]:align-middle"
             >
@@ -229,7 +217,17 @@ function saved() {
         v-if="query"
         class="border-t border-border px-4 py-3 text-xs text-muted"
       >
-        {{ filteredKeys.length }} of {{ keys.length }} API keys
+        {{ matched }} of {{ total }} API keys
+      </div>
+      <div
+        v-if="loading || error || nextCursor"
+        ref="sentinel"
+      >
+        <TableLoadState
+          :loading="loading"
+          :error="error"
+          @retry="retry"
+        />
       </div>
     </section>
     <APIKeyDialog

@@ -27,8 +27,9 @@ func (s *Server) listNotifications(w http.ResponseWriter, r *http.Request, actor
 	if err != nil {
 		return notificationFailure(err)
 	}
-	response.JSON(w, 200, map[string]any{"targets": targets})
-	return nil
+	return listResponse(w, r, "targets", targets, func(item store.NotificationTarget) listEntry {
+		return listEntry{id: item.ID, name: item.Name, search: item.Name}
+	}, nil)
 }
 
 func (s *Server) saveNotification(w http.ResponseWriter, r *http.Request, actor store.Actor) error {

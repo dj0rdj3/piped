@@ -17,6 +17,9 @@ func TestCopyJobSecretsAndIndependentUpdates(t *testing.T) {
 	service, db, actor, targets := jobHarness(t)
 	ctx := context.Background()
 	input := jobInput(targets)
+	input.HostTags = []string{"production"}
+	input.HostIDs = []string{targets[0].ID}
+	input.ExcludedHostIDs = []string{targets[1].ID}
 	input.Secrets = []SecretInput{{Name: "TOKEN", Value: secretValue("source-secret")}, {Name: "REMOVE_ME", Value: secretValue("removed-secret")}}
 	input.Schedule = &store.JobSchedule{Cron: "0 2 * * *", Enabled: true}
 	source, err := service.Save(ctx, actor, "", input)
@@ -30,6 +33,12 @@ func TestCopyJobSecretsAndIndependentUpdates(t *testing.T) {
 	copied, err := service.Save(ctx, actor, "", input)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !slices.Equal(copied.HostTags, source.HostTags) {
+		t.Fatal("copied job lost its dynamic tag targets")
+	}
+	if !slices.Equal(copied.ExcludedHostIDs, source.ExcludedHostIDs) {
+		t.Fatal("copied job lost its host exclusions")
 	}
 	if copied.ID == source.ID || copied.Version != 1 || copied.Schedule.Enabled || !slices.Equal(copied.HostIDs, source.HostIDs) || copied.Script != source.Script || !slices.Equal(copied.SecretNames, []string{"NEW_TOKEN", "TOKEN"}) {
 		t.Fatalf("incorrect copy: %+v", copied)

@@ -2,6 +2,7 @@ package httpserver
 
 import (
 	"net/http"
+	"strings"
 
 	"piped/internal/hosts"
 	"piped/internal/httpserver/response"
@@ -13,8 +14,9 @@ func (s *Server) listHosts(w http.ResponseWriter, r *http.Request, actor store.A
 	if err != nil {
 		return response.HostFailure(err)
 	}
-	response.JSON(w, 200, map[string]any{"hosts": items})
-	return nil
+	return listResponse(w, r, "hosts", items, func(item store.Host) listEntry {
+		return listEntry{id: item.ID, name: item.Name, search: strings.Join(append([]string{item.Name, item.Address, item.Username, item.CredentialName}, item.Tags...), " "), tags: item.Tags}
+	}, nil)
 }
 
 func (s *Server) saveHost(w http.ResponseWriter, r *http.Request, actor store.Actor) error {

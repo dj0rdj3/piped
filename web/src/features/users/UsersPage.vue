@@ -1,32 +1,37 @@
 <script setup>
-import { computed, ref } from 'vue';
-import { KeyRound, LoaderCircle, Plus, RefreshCw, Search, Trash2 } from '@lucide/vue';
+import { ref } from 'vue';
+import { KeyRound, Plus, RefreshCw, Search, Trash2 } from '@lucide/vue';
 import UserDialog from './UserDialog.vue';
 import AppButton from '../../components/ui/AppButton.vue';
 import PageHeading from '../../components/ui/PageHeading.vue';
 import StatusMessage from '../../components/ui/StatusMessage.vue';
 import { api } from '../../lib/api.js';
-import { usePageLoad } from '../../composables/usePageLoad.js';
+import { useInfiniteTable } from '../../composables/useInfiniteTable.js';
+import TableLoadState from '../../components/ui/TableLoadState.vue';
 import { formatTimestamp } from '../../lib/date-time.js';
 
 const props = defineProps({ currentUser: { type: Object, required: true } });
 const emit = defineEmits(['signed-out', 'auth-error', 'open-navigation']);
-const users = ref([]);
 const query = ref('');
 const notice = ref('');
 const dialog = ref(null);
 
-const filteredUsers = computed(() => {
-  const search = query.value.toLowerCase();
-  return users.value.filter((account) => account.username.toLowerCase().includes(search));
-});
-
-const { load, loading, error } = usePageLoad(
-  () => api('/users'),
-  (result) => {
-    users.value = result.users;
-  },
+const {
+  rows: users,
+  load,
+  loading,
+  error,
+  total,
+  matched,
+  table,
+  sentinel,
+  nextCursor,
+  retry,
+} = useInfiniteTable(
+  (params, signal) => api(`/users?${params}`, { signal }),
+  'users',
   () => emit('signed-out', 'Session expired. Sign in again.'),
+  { filters: () => ({ q: query.value }) },
 );
 
 async function saved(message) {
@@ -52,29 +57,13 @@ async function saved(message) {
       </AppButton>
     </PageHeading>
     <StatusMessage v-if="notice">{{ notice }}</StatusMessage>
-    <StatusMessage
-      v-if="error"
-      variant="error"
-    >
-      {{ error }}
-      <template #action>
-        <AppButton
-          variant="text"
-          @click="load"
-        >
-          Retry
-        </AppButton>
-      </template>
-    </StatusMessage>
     <section
       class="overflow-hidden rounded-[.65rem] border border-border bg-surface shadow-sm shadow-black/5 dark:shadow-black/20"
       aria-labelledby="members-title"
       :aria-busy="loading"
     >
       <div class="flex flex-wrap items-center justify-between gap-3 px-4 py-3.5">
-        <span class="text-sm text-muted">
-          {{ users.length }} {{ users.length === 1 ? 'user' : 'users' }}
-        </span>
+        <span class="text-sm text-muted">{{ total }} {{ total === 1 ? 'user' : 'users' }}</span>
         <div class="flex min-w-0 items-center gap-2 max-[560px]:w-full">
           <AppButton
             variant="icon"
@@ -112,7 +101,10 @@ async function saved(message) {
           </div>
         </div>
       </div>
-      <div class="relative overflow-x-auto">
+      <div
+        ref="table"
+        class="relative overflow-x-auto"
+      >
         <table class="w-full min-w-[36rem] border-collapse text-left whitespace-nowrap">
           <thead>
             <tr>
@@ -138,7 +130,7 @@ async function saved(message) {
           </thead>
           <tbody class="[&>tr:last-child>td]:border-b-0">
             <tr
-              v-for="member in filteredUsers"
+              v-for="member in users"
               :key="member.id"
               class="h-16 hover:bg-surface-hover [&>td]:align-middle"
             >
@@ -190,19 +182,7 @@ async function saved(message) {
                 </div>
               </td>
             </tr>
-            <tr v-if="loading && !users.length">
-              <td
-                colspan="3"
-                class="p-12 text-center text-sm text-muted"
-              >
-                <LoaderCircle
-                  class="mr-2 inline align-middle motion-safe:animate-spin"
-                  :size="20"
-                />
-                Loading&hellip;
-              </td>
-            </tr>
-            <tr v-else-if="!filteredUsers.length">
+            <tr v-if="!loading && !error && !users.length">
               <td
                 colspan="3"
                 class="p-12 text-center text-sm text-muted"
@@ -217,7 +197,17 @@ async function saved(message) {
         v-if="query"
         class="border-t border-border px-4 py-3 text-xs text-muted"
       >
-        {{ filteredUsers.length }} of {{ users.length }} users
+        {{ matched }} of {{ total }} users
+      </div>
+      <div
+        v-if="loading || error || nextCursor"
+        ref="sentinel"
+      >
+        <TableLoadState
+          :loading="loading"
+          :error="error"
+          @retry="retry"
+        />
       </div>
     </section>
     <UserDialog

@@ -1,30 +1,17 @@
 <script setup>
-import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue';
-import {
-  Bell,
-  ChevronDown,
-  LoaderCircle,
-  Pencil,
-  Plus,
-  RefreshCw,
-  Search,
-  Trash2,
-  Webhook,
-} from '@lucide/vue';
+import { nextTick, onMounted, onUnmounted, ref } from 'vue';
+import { Bell, ChevronDown, Pencil, Plus, RefreshCw, Search, Trash2, Webhook } from '@lucide/vue';
 import WebhookDialog from './WebhookDialog.vue';
 import AppButton from '../../components/ui/AppButton.vue';
 import PageHeading from '../../components/ui/PageHeading.vue';
 import StatusMessage from '../../components/ui/StatusMessage.vue';
 import { api } from '../../lib/api.js';
-import { usePageLoad } from '../../composables/usePageLoad.js';
+import { useInfiniteTable } from '../../composables/useInfiniteTable.js';
+import TableLoadState from '../../components/ui/TableLoadState.vue';
 
 const emit = defineEmits(['signed-out', 'auth-error', 'open-navigation']);
-const targets = ref([]);
 const query = ref('');
-const filteredTargets = computed(() => {
-  const search = query.value.toLowerCase();
-  return targets.value.filter((target) => target.name.toLowerCase().includes(search));
-});
+
 const notice = ref('');
 const dialog = ref(null);
 const addMenuOpen = ref(false);
@@ -74,12 +61,22 @@ function createTarget(type) {
 
 onMounted(() => window.addEventListener('pointerdown', dismissAddMenu));
 onUnmounted(() => window.removeEventListener('pointerdown', dismissAddMenu));
-const { load, loading, error } = usePageLoad(
-  () => api('/notifications'),
-  (result) => {
-    targets.value = result.targets;
-  },
+const {
+  rows: targets,
+  load,
+  loading,
+  error,
+  total,
+  matched,
+  table,
+  sentinel,
+  nextCursor,
+  retry,
+} = useInfiniteTable(
+  (params, signal) => api(`/notifications?${params}`, { signal }),
+  'targets',
   () => emit('signed-out'),
+  { filters: () => ({ q: query.value }) },
 );
 
 function saved() {
@@ -139,29 +136,13 @@ function saved() {
       </div>
     </PageHeading>
     <StatusMessage v-if="notice">{{ notice }}</StatusMessage>
-    <StatusMessage
-      v-if="error"
-      variant="error"
-    >
-      {{ error }}
-      <template #action>
-        <AppButton
-          variant="text"
-          @click="load"
-        >
-          Retry
-        </AppButton>
-      </template>
-    </StatusMessage>
     <section
       class="overflow-hidden rounded-[.65rem] border border-border bg-surface shadow-sm shadow-black/5 dark:shadow-black/20"
       aria-labelledby="notifications-title"
       :aria-busy="loading"
     >
       <div class="flex flex-wrap items-center justify-between gap-3 px-4 py-3.5">
-        <span class="text-sm text-muted">
-          {{ targets.length }} {{ targets.length === 1 ? 'target' : 'targets' }}
-        </span>
+        <span class="text-sm text-muted">{{ total }} {{ total === 1 ? 'target' : 'targets' }}</span>
         <div class="flex min-w-0 items-center gap-2 max-[560px]:w-full">
           <AppButton
             variant="icon"
@@ -199,7 +180,10 @@ function saved() {
           </div>
         </div>
       </div>
-      <div class="relative overflow-x-auto">
+      <div
+        ref="table"
+        class="relative overflow-x-auto"
+      >
         <table class="w-full min-w-[36rem] border-collapse text-left whitespace-nowrap">
           <thead>
             <tr>
@@ -236,19 +220,7 @@ function saved() {
             </tr>
           </thead>
           <tbody class="[&>tr:last-child>td]:border-b-0">
-            <tr v-if="loading && !targets.length">
-              <td
-                colspan="5"
-                class="p-12 text-center text-sm text-muted"
-              >
-                <LoaderCircle
-                  class="mr-2 inline align-middle motion-safe:animate-spin"
-                  :size="20"
-                />
-                Loading&hellip;
-              </td>
-            </tr>
-            <tr v-else-if="!filteredTargets.length">
+            <tr v-if="!loading && !error && !targets.length">
               <td
                 colspan="5"
                 class="p-12 text-center text-sm text-muted"
@@ -257,7 +229,7 @@ function saved() {
               </td>
             </tr>
             <tr
-              v-for="target in filteredTargets"
+              v-for="target in targets"
               :key="target.id"
               class="h-16 hover:bg-surface-hover [&>td]:align-middle"
             >
@@ -313,7 +285,17 @@ function saved() {
         v-if="query"
         class="border-t border-border px-4 py-3 text-xs text-muted"
       >
-        {{ filteredTargets.length }} of {{ targets.length }} targets
+        {{ matched }} of {{ total }} targets
+      </div>
+      <div
+        v-if="loading || error || nextCursor"
+        ref="sentinel"
+      >
+        <TableLoadState
+          :loading="loading"
+          :error="error"
+          @retry="retry"
+        />
       </div>
     </section>
     <WebhookDialog

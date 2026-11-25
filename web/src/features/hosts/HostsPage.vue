@@ -1,16 +1,16 @@
 <script setup>
-import { computed, ref, watch } from 'vue';
-import { LoaderCircle, Pencil, Plus, RefreshCw, Search, Server, Trash2 } from '@lucide/vue';
+import { ref, watch } from 'vue';
+import { Pencil, Plus, RefreshCw, Search, Server, Trash2 } from '@lucide/vue';
 import HostDialog from './HostDialog.vue';
 import AppButton from '../../components/ui/AppButton.vue';
 import PageHeading from '../../components/ui/PageHeading.vue';
 import StatusMessage from '../../components/ui/StatusMessage.vue';
 import { api } from '../../lib/api.js';
-import { usePageLoad } from '../../composables/usePageLoad.js';
+import { useInfiniteTable } from '../../composables/useInfiniteTable.js';
+import TableLoadState from '../../components/ui/TableLoadState.vue';
 
 const props = defineProps({ requestedAction: { type: Object, default: null } });
 const emit = defineEmits(['signed-out', 'auth-error', 'open-navigation']);
-const hosts = ref([]);
 const query = ref('');
 const tag = ref('');
 const notice = ref('');
@@ -24,27 +24,29 @@ watch(
   },
   { immediate: true },
 );
-const tags = computed(() => [...new Set(hosts.value.flatMap((host) => host.tags))].sort());
-const filtered = computed(() =>
-  hosts.value.filter((host) => {
-    const text = [host.name, host.address, host.username, host.credential_name, ...host.tags]
-      .join(' ')
-      .toLowerCase();
-    return (
-      text.includes(query.value.toLowerCase()) && (!tag.value || host.tags.includes(tag.value))
-    );
-  }),
-);
+const tags = ref([]);
 
-const { load, loading, error } = usePageLoad(
-  () => api('/hosts'),
-  (result) => {
-    hosts.value = result.hosts;
-    if (!tags.value.includes(tag.value)) {
-      tag.value = '';
-    }
-  },
+const {
+  rows: hosts,
+  load,
+  loading,
+  error,
+  total,
+  matched,
+  table,
+  sentinel,
+  nextCursor,
+  retry,
+} = useInfiniteTable(
+  (params, signal) => api(`/hosts?${params}`, { signal }),
+  'hosts',
   () => emit('signed-out'),
+  {
+    filters: () => ({ q: query.value, tag: tag.value }),
+    applyResult: (result) => {
+      tags.value = result.tags || [];
+    },
+  },
 );
 
 async function saved() {
@@ -72,29 +74,13 @@ async function saved() {
       </AppButton>
     </PageHeading>
     <StatusMessage v-if="notice">{{ notice }}</StatusMessage>
-    <StatusMessage
-      v-if="error"
-      variant="error"
-    >
-      {{ error }}
-      <template #action>
-        <AppButton
-          variant="text"
-          @click="load"
-        >
-          Retry
-        </AppButton>
-      </template>
-    </StatusMessage>
     <section
       class="overflow-hidden rounded-[.65rem] border border-border bg-surface shadow-sm shadow-black/5 dark:shadow-black/20"
       aria-labelledby="hosts-title"
       :aria-busy="loading"
     >
       <div class="flex flex-wrap items-center justify-between gap-3 px-4 py-3.5">
-        <span class="text-sm text-muted">
-          {{ hosts.length }} {{ hosts.length === 1 ? 'host' : 'hosts' }}
-        </span>
+        <span class="text-sm text-muted">{{ total }} {{ total === 1 ? 'host' : 'hosts' }}</span>
         <div class="flex min-w-0 flex-wrap items-center gap-2 max-[560px]:w-full">
           <div class="flex min-w-0 items-center gap-2 max-[560px]:w-full">
             <AppButton
@@ -154,7 +140,10 @@ async function saved() {
           </div>
         </div>
       </div>
-      <div class="relative overflow-x-auto">
+      <div
+        ref="table"
+        class="relative overflow-x-auto"
+      >
         <table class="w-full min-w-[44rem] border-collapse text-left">
           <thead>
             <tr>
@@ -176,7 +165,7 @@ async function saved() {
           </thead>
           <tbody class="[&>tr:last-child>td]:border-b-0">
             <tr
-              v-for="host in filtered"
+              v-for="host in hosts"
               :key="host.id"
               class="h-16 hover:bg-surface-hover [&>td]:align-middle"
             >
@@ -280,19 +269,7 @@ async function saved() {
                 </div>
               </td>
             </tr>
-            <tr v-if="loading && !hosts.length">
-              <td
-                colspan="6"
-                class="p-12 text-center text-sm text-muted"
-              >
-                <LoaderCircle
-                  class="mr-2 inline align-middle motion-safe:animate-spin"
-                  :size="20"
-                />
-                Loading&hellip;
-              </td>
-            </tr>
-            <tr v-else-if="!filtered.length">
+            <tr v-if="!loading && !error && !hosts.length">
               <td
                 colspan="6"
                 class="p-12 text-center text-sm text-muted"
@@ -307,7 +284,17 @@ async function saved() {
         v-if="query || tag"
         class="border-t border-border px-4 py-3 text-xs text-muted"
       >
-        {{ filtered.length }} of {{ hosts.length }} hosts
+        {{ matched }} of {{ total }} hosts
+      </div>
+      <div
+        v-if="loading || error || nextCursor"
+        ref="sentinel"
+      >
+        <TableLoadState
+          :loading="loading"
+          :error="error"
+          @retry="retry"
+        />
       </div>
     </section>
     <HostDialog

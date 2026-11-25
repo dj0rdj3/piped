@@ -189,6 +189,28 @@ func (t *transaction) QueryRowContext(ctx context.Context, query string, args ..
 	return t.Tx.QueryRowContext(ctx, t.database.query(query), sqlArguments(args)...)
 }
 
+// queryStrings reads one string column in query order and closes the result
+// before returning, so callers can safely issue another transactional query.
+func (t *transaction) queryStrings(ctx context.Context, query string, args ...any) ([]string, error) {
+	rows, err := t.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	values := []string{}
+	for rows.Next() {
+		var value string
+		if err := rows.Scan(&value); err != nil {
+			return nil, err
+		}
+		values = append(values, value)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return values, rows.Close()
+}
+
 // All schemas store booleans as constrained integers, keeping existing SQLite
 // databases compatible and avoiding driver-specific boolean parameter inference.
 func sqlArguments(args []any) []any {

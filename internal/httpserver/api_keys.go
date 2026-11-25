@@ -2,6 +2,8 @@ package httpserver
 
 import (
 	"errors"
+	"fmt"
+	"math"
 	"net/http"
 	"time"
 
@@ -15,8 +17,9 @@ func (s *Server) listAPIKeys(w http.ResponseWriter, r *http.Request, actor store
 	if err != nil {
 		return err
 	}
-	response.JSON(w, 200, map[string]any{"keys": keys, "scopes": auth.APIKeyScopes()})
-	return nil
+	return listResponse(w, r, "keys", keys, func(item store.APIKey) listEntry {
+		return listEntry{id: item.ID, name: fmt.Sprintf("%020d", int64(math.MaxInt64)-item.CreatedAt), search: item.Name}
+	}, map[string]any{"scopes": auth.APIKeyScopes()})
 }
 
 func (s *Server) createAPIKey(w http.ResponseWriter, r *http.Request, actor store.Actor) error {

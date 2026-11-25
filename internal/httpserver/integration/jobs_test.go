@@ -134,3 +134,63 @@ func TestJobSecretHTTPWriteOnlyUpdates(t *testing.T) {
 		t.Fatal("empty list did not remove secrets")
 	}
 }
+
+func TestJobHTTPTagTargetsAndEmptyRunError(t *testing.T) {
+	h := newHarness(t, false)
+	cookie := h.login(t, "admin", testPassword)
+	body := jobBody("")
+	body["host_ids"] = []string{}
+	body["host_tags"] = []string{"future"}
+	w := h.request("POST", "/api/jobs", body, cookie)
+	expect(t, w, 201)
+	job := responseJob(t, w)
+	if len(job.HostIDs) != 0 || len(job.HostTags) != 1 || job.HostTags[0] != "future" {
+		t.Fatalf("lost tag-only targets: %+v", job)
+	}
+	w = h.request("POST", "/api/jobs/"+job.ID+"/run", map[string]int64{"version": job.Version}, cookie)
+	expect(t, w, 400)
+	if !strings.Contains(w.Body.String(), "job targets must match") {
+		t.Fatal("missing target error was not public", w.Body.String())
+	}
+	w = h.request("GET", "/api/jobs", nil, cookie)
+	expect(t, w, 200)
+	if !strings.Contains(w.Body.String(), `"host_tags":["future"]`) {
+		t.Fatal("job listing lost dynamic tags")
+	}
+}
+
+func TestJobHTTPExclusionsAndProductionAPI(t *testing.T) {
+	h := newHarness(t, false)
+	cookie := h.login(t, "admin", testPassword)
+	w := h.request("POST", "/api/hosts", hostBody(), cookie)
+	expect(t, w, 201)
+	host := responseHost(t, w)
+	_, token := h.createPersonalKey(t, cookie, store.ScopeJobsRead, store.ScopeJobsWrite)
+	input := jobBody("")
+	input["host_ids"] = []string{}
+	input["host_tags"] = []string{"web"}
+	input["excluded_host_ids"] = []string{host.ID}
+	w = h.bearerRequest("POST", "/api/v1/jobs", token, input, nil)
+	expect(t, w, 201)
+	job := responseJob(t, w)
+	if len(job.ExcludedHostIDs) != 1 || job.ExcludedHostIDs[0] != host.ID || len(job.HostTags) != 1 {
+		t.Fatalf("exclusions lost: %+v", job)
+	}
+	w = h.request("GET", "/api/jobs", nil, cookie)
+	expect(t, w, 200)
+	if !strings.Contains(w.Body.String(), `"excluded_host_ids":["`+host.ID+`"]`) {
+		t.Fatal("browser listing lost exclusions")
+	}
+	input["version"] = job.Version
+	input["host_ids"] = []string{host.ID}
+	expect(t, h.bearerRequest("PUT", "/api/v1/jobs/"+job.ID, token, input, nil), 400)
+	input["host_ids"] = []string{}
+	input["excluded_host_ids"] = []string{strings.Repeat("a", 32)}
+	expect(t, h.bearerRequest("PUT", "/api/v1/jobs/"+job.ID, token, input, nil), 400)
+	input["excluded_host_ids"] = []string{}
+	w = h.bearerRequest("PUT", "/api/v1/jobs/"+job.ID, token, input, nil)
+	expect(t, w, 200)
+	if len(responseJob(t, w).ExcludedHostIDs) != 0 {
+		t.Fatal("rechecking did not clear exclusion")
+	}
+}

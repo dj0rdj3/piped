@@ -10,6 +10,7 @@ import { api } from '../../lib/api.js';
 import { usePageLoad } from '../../composables/usePageLoad.js';
 import { formChanges } from '../../lib/unsaved-changes.js';
 import { formatScheduleTime } from '../../lib/date-time.js';
+import { resolveJobHostIDs } from './job-targets.js';
 
 const props = defineProps({
   serverTimezone: { type: String, default: 'server local time' },
@@ -24,6 +25,8 @@ const name = ref(
 );
 const script = ref(props.target?.script || '');
 const hostIDs = ref([...(props.target?.host_ids || [])]);
+const targetTags = ref([...(props.target?.host_tags || [])]);
+const excludedHostIDs = ref([...(props.target?.excluded_host_ids || [])]);
 const scheduleEnabled = ref(
   props.mode === 'duplicate' ? false : (props.target?.schedule?.enabled ?? false),
 );
@@ -50,6 +53,8 @@ const dirty = formChanges(
     name.value,
     script.value,
     hostIDs.value,
+    targetTags.value,
+    excludedHostIDs.value,
     JSON.stringify(notificationIDs.value) === JSON.stringify(initialNotificationIDs.value)
       ? null
       : notificationIDs.value,
@@ -107,21 +112,58 @@ watch(
   },
   { immediate: true },
 );
-const availableHosts = computed(() => {
+const hostTags = computed(() =>
+  [...new Set([...hosts.value.flatMap((host) => host.tags), ...targetTags.value])].sort(),
+);
+const availableTags = computed(() =>
+  hostTags.value.filter((tag) => tag.toLowerCase().includes(query.value.toLowerCase())),
+);
+const matchingTargetTags = computed(
+  () =>
+    new Map(
+      hosts.value.map((host) => [
+        host.id,
+        targetTags.value.filter((tag) => host.tags.includes(tag)),
+      ]),
+    ),
+);
+const partiallySelectedTags = computed(
+  () =>
+    new Set(
+      hosts.value
+        .filter((host) => excludedHostIDs.value.includes(host.id))
+        .flatMap((host) => matchingTargetTags.value.get(host.id)),
+    ),
+);
+const includedHostIDs = computed(() =>
+  resolveJobHostIDs(
+    {
+      host_ids: hostIDs.value,
+      host_tags: targetTags.value,
+      excluded_host_ids: excludedHostIDs.value,
+    },
+    hosts.value,
+  ),
+);
+const orderedHosts = computed(() => {
   const selectedPositions = new Map(hostIDs.value.map((id, index) => [id, index]));
-  return hosts.value
-    .filter((host) =>
-      [host.name, host.address, ...host.tags]
-        .join(' ')
-        .toLowerCase()
-        .includes(query.value.toLowerCase()),
-    )
-    .sort(
-      (first, second) =>
-        (selectedPositions.get(first.id) ?? hostIDs.value.length) -
-        (selectedPositions.get(second.id) ?? hostIDs.value.length),
-    );
+  return [...hosts.value].sort(
+    (first, second) =>
+      (selectedPositions.get(first.id) ?? hostIDs.value.length) -
+      (selectedPositions.get(second.id) ?? hostIDs.value.length),
+  );
 });
+const availableHosts = computed(() => {
+  const search = query.value.toLowerCase();
+  return orderedHosts.value.filter((host) =>
+    [host.name, host.address, ...host.tags].join(' ').toLowerCase().includes(search),
+  );
+});
+const allVisibleHostsSelected = computed(
+  () =>
+    availableHosts.value.length > 0 &&
+    availableHosts.value.every((host) => includedHostIDs.value.has(host.id)),
+);
 const scriptBytes = computed(() => new window.TextEncoder().encode(script.value).length);
 const canSave = computed(
   () =>
@@ -129,7 +171,7 @@ const canSave = computed(
     !hostError.value &&
     !loadingNotifications.value &&
     !notificationError.value &&
-    hostIDs.value.length > 0 &&
+    (hostIDs.value.length > 0 || targetTags.value.length > 0) &&
     scriptBytes.value <= 65536,
 );
 
@@ -172,6 +214,83 @@ const {
   { loadOnMount: props.mode !== 'delete' },
 );
 
+function toggleTag(tag) {
+  if (targetTags.value.includes(tag) && !partiallySelectedTags.value.has(tag)) {
+    targetTags.value = targetTags.value.filter((selectedTag) => selectedTag !== tag);
+    return;
+  }
+  const members = new Set(
+    hosts.value.filter((host) => host.tags.includes(tag)).map((host) => host.id),
+  );
+  excludedHostIDs.value = excludedHostIDs.value.filter((id) => !members.has(id));
+  if (!targetTags.value.includes(tag)) {
+    targetTags.value = [...targetTags.value, tag];
+  }
+}
+
+function deselectHosts(ids) {
+  hostIDs.value = hostIDs.value.filter((id) => !ids.has(id));
+  const excluded = new Set(excludedHostIDs.value);
+  for (const id of ids) {
+    if (matchingTargetTags.value.get(id).length) {
+      excluded.add(id);
+    }
+  }
+  const deselectedTags = new Set([...ids].flatMap((id) => matchingTargetTags.value.get(id)));
+  // An affected tag stays selected while any of its members remains included.
+  for (const host of hosts.value) {
+    if (!excluded.has(host.id)) {
+      for (const tag of host.tags) {
+        deselectedTags.delete(tag);
+      }
+    }
+  }
+  const remainingTags = targetTags.value.filter((tag) => !deselectedTags.has(tag));
+  const clearedExclusions = new Set(
+    hosts.value
+      .filter(
+        (host) =>
+          host.tags.some((tag) => deselectedTags.has(tag)) &&
+          !host.tags.some((tag) => remainingTags.includes(tag)),
+      )
+      .map((host) => host.id),
+  );
+  targetTags.value = remainingTags;
+  excludedHostIDs.value = [...excluded].filter((id) => !clearedExclusions.has(id));
+}
+
+function toggleVisibleHosts() {
+  if (allVisibleHostsSelected.value) {
+    if (!query.value) {
+      hostIDs.value = [];
+      targetTags.value = [];
+      excludedHostIDs.value = [];
+      return;
+    }
+    deselectHosts(new Set(availableHosts.value.map((host) => host.id)));
+    return;
+  }
+  const additionalIDs = availableHosts.value
+    .filter(
+      (host) => !hostIDs.value.includes(host.id) && !matchingTargetTags.value.get(host.id).length,
+    )
+    .map((host) => host.id);
+  const visibleIDs = new Set(availableHosts.value.map((host) => host.id));
+  excludedHostIDs.value = excludedHostIDs.value.filter((id) => !visibleIDs.has(id));
+  hostIDs.value = [...hostIDs.value, ...additionalIDs];
+}
+
+function toggleHost(id) {
+  if (includedHostIDs.value.has(id)) {
+    deselectHosts(new Set([id]));
+    return;
+  }
+  excludedHostIDs.value = excludedHostIDs.value.filter((excludedID) => excludedID !== id);
+  if (!matchingTargetTags.value.get(id).length) {
+    hostIDs.value = [...hostIDs.value, id];
+  }
+}
+
 function moveHost(id, direction) {
   const index = hostIDs.value.indexOf(id);
   const next = index + direction;
@@ -203,6 +322,8 @@ async function submit() {
         name: name.value,
         script: script.value,
         host_ids: hostIDs.value,
+        host_tags: targetTags.value,
+        excluded_host_ids: excludedHostIDs.value,
         notification_target_ids: notificationIDs.value,
         execution_mode: executionMode.value,
         run_as_sudo: runAsSudo.value,
@@ -466,7 +587,7 @@ async function submit() {
           <legend
             class="mb-2 flex w-full items-center gap-3 px-0 text-sm font-[550] after:h-px after:flex-1 after:bg-border"
           >
-            Hosts ({{ hostIDs.length }} selected)
+            Hosts ({{ includedHostIDs.size }} selected)
           </legend>
           <StatusMessage
             v-if="hostError"
@@ -490,37 +611,80 @@ async function submit() {
             Loading hosts&hellip;
           </p>
           <p
-            v-else-if="!hosts.length"
+            v-else-if="!hosts.length && !hostTags.length"
             class="py-3 text-sm text-muted"
           >
-            Add a host on the Hosts page first.
+            No hosts currently available.
           </p>
           <template v-else>
-            <div class="relative mb-2">
-              <Search
-                :size="16"
-                class="pointer-events-none absolute top-3 left-3 text-muted"
-              />
-              <input
-                v-model="query"
-                type="search"
-                aria-label="Find hosts"
-                placeholder="Find hosts or tags"
-                class="w-full rounded-md border border-border-strong bg-surface py-2 pl-9 pr-3 text-sm focus:border-focus focus:outline-none focus:ring-3 focus:ring-focus-ring"
-              />
+            <div class="mb-2 flex min-w-0 items-center gap-2">
+              <div class="relative min-w-0 flex-1">
+                <Search
+                  :size="16"
+                  class="pointer-events-none absolute top-3 left-3 text-muted"
+                />
+                <input
+                  v-model="query"
+                  type="search"
+                  aria-label="Find hosts or tags"
+                  placeholder="Find hosts or tags"
+                  class="w-full rounded-md border border-border-strong bg-surface py-2 pl-9 pr-3 text-sm focus:border-focus focus:outline-none focus:ring-3 focus:ring-focus-ring"
+                />
+              </div>
+              <AppButton
+                :disabled="!availableHosts.length"
+                @click="toggleVisibleHosts"
+              >
+                {{ allVisibleHostsSelected ? 'Deselect all' : 'Select all' }}
+              </AppButton>
             </div>
-            <div class="max-h-40 overflow-y-auto rounded-lg border border-border">
+            <div class="max-h-64 overflow-y-auto rounded-lg border border-border">
+              <label
+                v-for="tag in availableTags"
+                :key="`tag:${tag}`"
+                class="flex min-w-0 cursor-pointer items-center gap-3 border-b border-border px-3 py-2 text-sm last:border-0 hover:bg-surface-hover"
+                :class="{ 'bg-surface-hover': targetTags.includes(tag) }"
+              >
+                <input
+                  type="checkbox"
+                  :value="tag"
+                  :checked="targetTags.includes(tag) && !partiallySelectedTags.has(tag)"
+                  :indeterminate="partiallySelectedTags.has(tag)"
+                  :aria-label="`Target tag ${tag}`"
+                  class="size-4 shrink-0 accent-accent"
+                  @change="toggleTag(tag)"
+                />
+                <span class="flex min-w-0 items-center gap-2">
+                  <span class="truncate">{{ tag }}</span>
+                  <span
+                    class="shrink-0 rounded-full border border-border px-1.5 py-0.5 text-[10px] leading-none text-muted"
+                  >
+                    tag
+                  </span>
+                </span>
+              </label>
               <div
                 v-for="host in availableHosts"
-                :key="host.id"
+                :key="`host:${host.id}`"
                 class="flex min-w-0 items-center gap-2 border-b border-border px-3 py-2 last:border-0 hover:bg-surface-hover"
+                :class="{
+                  'bg-surface-hover':
+                    matchingTargetTags.get(host.id).length && includedHostIDs.has(host.id),
+                }"
               >
                 <label class="flex min-w-0 flex-1 cursor-pointer items-center gap-3">
                   <input
-                    v-model="hostIDs"
                     type="checkbox"
                     :value="host.id"
+                    :aria-label="`Select ${host.name}`"
+                    :checked="includedHostIDs.has(host.id)"
+                    :aria-describedby="
+                      matchingTargetTags.get(host.id).length || excludedHostIDs.includes(host.id)
+                        ? `job-host-tags-${host.id}`
+                        : undefined
+                    "
                     class="size-4 shrink-0 accent-accent"
+                    @change="toggleHost(host.id)"
                   />
                   <span
                     v-if="executionMode === 'sequential' && hostIDs.includes(host.id)"
@@ -529,7 +693,31 @@ async function submit() {
                   >
                     {{ hostIDs.indexOf(host.id) + 1 }}
                   </span>
-                  <span class="min-w-0 flex-1 truncate text-sm">{{ host.name }}</span>
+                  <span class="min-w-0 flex-1">
+                    <span class="flex min-w-0 items-center gap-2 text-sm">
+                      <span class="truncate">{{ host.name }}</span>
+                      <span
+                        class="shrink-0 rounded-full border border-border px-1.5 py-0.5 text-[10px] leading-none text-muted"
+                      >
+                        host
+                      </span>
+                    </span>
+                    <span
+                      v-if="
+                        matchingTargetTags.get(host.id).length || excludedHostIDs.includes(host.id)
+                      "
+                      :id="`job-host-tags-${host.id}`"
+                      class="mt-0.5 block truncate text-xs text-muted"
+                      :title="matchingTargetTags.get(host.id).join(', ')"
+                    >
+                      {{ excludedHostIDs.includes(host.id) ? 'Excluded' : 'Included' }}
+                      <template v-if="matchingTargetTags.get(host.id).length">
+                        {{ excludedHostIDs.includes(host.id) ? 'from' : 'via' }}
+                        {{ matchingTargetTags.get(host.id).length === 1 ? 'tag' : 'tags' }}:
+                        {{ matchingTargetTags.get(host.id).join(', ') }}
+                      </template>
+                    </span>
+                  </span>
                 </label>
                 <template v-if="hostIDs.includes(host.id) && executionMode === 'sequential'">
                   <AppButton
@@ -551,10 +739,10 @@ async function submit() {
                 </template>
               </div>
               <p
-                v-if="!availableHosts.length"
+                v-if="!availableHosts.length && !availableTags.length"
                 class="p-3 text-sm text-muted"
               >
-                No matching hosts.
+                No matching hosts or tags.
               </p>
             </div>
           </template>

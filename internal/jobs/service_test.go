@@ -171,6 +171,16 @@ func TestJobValidation(t *testing.T) {
 		{"invalid host", func(i *Input) { i.HostIDs = []string{"invalid"} }},
 		{"duplicate host", func(i *Input) { i.HostIDs = []string{strings.Repeat("a", 32), strings.Repeat("a", 32)} }},
 		{"noncanonical host", func(i *Input) { i.HostIDs = []string{strings.Repeat("A", 32)} }},
+		{"empty tag", func(i *Input) { i.HostTags = []string{" "} }},
+		{"long tag", func(i *Input) { i.HostTags = []string{strings.Repeat("a", 51)} }},
+		{"control tag", func(i *Input) { i.HostTags = []string{"one\nbad"} }},
+		{"comma tag", func(i *Input) { i.HostTags = []string{"one,two"} }},
+		{"invalid UTF-8 tag", func(i *Input) { i.HostTags = []string{"\xff"} }},
+		{"many tags", func(i *Input) { i.HostTags = make([]string, 1001) }},
+		{"invalid exclusion", func(i *Input) { i.ExcludedHostIDs = []string{"invalid"} }},
+		{"duplicate exclusion", func(i *Input) { i.ExcludedHostIDs = []string{strings.Repeat("b", 32), strings.Repeat("b", 32)} }},
+		{"selected exclusion", func(i *Input) { i.ExcludedHostIDs = i.HostIDs }},
+		{"many exclusions", func(i *Input) { i.ExcludedHostIDs = make([]string, 1001) }},
 		{"invalid mode", func(i *Input) { i.ExecutionMode = "invalid" }},
 	}
 	for _, tc := range cases {
@@ -268,5 +278,13 @@ func TestJobAuthorizationAndIDs(t *testing.T) {
 	}
 	if err := service.Delete(ctx, actor, job.ID, 1); !errors.Is(err, store.ErrUnauthorized) {
 		t.Fatalf("revoked session delete: %v", err)
+	}
+}
+
+func TestJobTagOnlyTargetsAndCanonicalTags(t *testing.T) {
+	input := Input{Name: "Tag job", Script: "true", HostTags: []string{" prod ", "dev", "prod", "\u65e5\u672c"}, ExecutionMode: "sequential"}
+	job, err := validate(input)
+	if err != nil || len(job.HostIDs) != 0 || !slices.Equal(job.HostTags, []string{"dev", "prod", "\u65e5\u672c"}) {
+		t.Fatalf("invalid canonical tags: %+v %v", job, err)
 	}
 }

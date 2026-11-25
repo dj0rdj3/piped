@@ -1,7 +1,10 @@
 package httpserver
 
 import (
+	"errors"
 	"net/http"
+	"slices"
+	"strings"
 
 	"piped/internal/httpserver/response"
 	"piped/internal/jobs"
@@ -22,8 +25,32 @@ func (s *Server) listJobs(w http.ResponseWriter, r *http.Request, actor store.Ac
 	if err != nil {
 		return response.JobFailure(err)
 	}
-	response.JSON(w, 200, map[string]any{"jobs": items, "server_timezone": jobs.ServerTimezone()})
-	return nil
+	var hosts []store.Host
+	if s.config.Hosts != nil && r.URL.Query().Has("limit") && r.URL.Query().Get("q") != "" {
+		hosts, err = s.config.Hosts.List(r.Context(), actor)
+		if err != nil && !errors.Is(err, store.ErrForbidden) {
+			return response.HostFailure(err)
+		}
+	}
+	return listResponse(w, r, "jobs", items, func(item store.Job) listEntry {
+		text := append([]string{item.Name}, item.HostTags...)
+		for _, host := range hosts {
+			if slices.Contains(item.ExcludedHostIDs, host.ID) {
+				continue
+			}
+			included := slices.Contains(item.HostIDs, host.ID)
+			for _, tag := range host.Tags {
+				if slices.Contains(item.HostTags, tag) {
+					included = true
+					break
+				}
+			}
+			if included {
+				text = append(text, host.Name)
+			}
+		}
+		return listEntry{id: item.ID, name: item.Name, search: strings.Join(text, " ")}
+	}, map[string]any{"server_timezone": jobs.ServerTimezone()})
 }
 
 func (s *Server) saveJob(w http.ResponseWriter, r *http.Request, actor store.Actor) error {

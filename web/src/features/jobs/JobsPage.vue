@@ -1,41 +1,33 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
-import {
-  Copy,
-  History,
-  LoaderCircle,
-  Pencil,
-  Play,
-  Plus,
-  RefreshCw,
-  Search,
-  Trash2,
-} from '@lucide/vue';
+import { Copy, History, Pencil, Play, Plus, RefreshCw, Search, Trash2 } from '@lucide/vue';
 import JobDialog from './JobDialog.vue';
 import ExecutionDialog from '../executions/ExecutionDialog.vue';
 import AppButton from '../../components/ui/AppButton.vue';
 import PageHeading from '../../components/ui/PageHeading.vue';
 import StatusMessage from '../../components/ui/StatusMessage.vue';
 import { api } from '../../lib/api.js';
+import { useInfiniteTable } from '../../composables/useInfiniteTable.js';
+import TableLoadState from '../../components/ui/TableLoadState.vue';
 import { readExecutionView, writeExecutionView } from '../executions/execution-view.js';
 import { formatTimestamp } from '../../lib/date-time.js';
+import { resolveJobHostIDs } from './job-targets.js';
 
 const props = defineProps({
   requestedAction: { type: Object, default: null },
   currentUserId: { type: Number, required: true },
 });
 const emit = defineEmits(['signed-out', 'auth-error', 'open-navigation']);
-const jobs = ref([]);
 const serverTimezone = ref('server local time');
 const hosts = ref([]);
 const query = ref('');
-const loading = ref(false);
-const error = ref('');
 const notice = ref('');
+const actionError = ref('');
 const dialog = ref(null);
 const execution = ref(null);
 const starting = ref(false);
-let requestID = 0;
+let summaryController;
+let restoreController;
 let restored = false;
 let summaryTimer;
 watch(
@@ -48,75 +40,111 @@ watch(
   { immediate: true },
 );
 const hostNames = computed(() => new Map(hosts.value.map((host) => [host.id, host.name])));
-const filtered = computed(() =>
-  jobs.value.filter((job) =>
-    [job.name, ...job.host_ids.map((id) => hostNames.value.get(id))]
-      .join(' ')
-      .toLowerCase()
-      .includes(query.value.toLowerCase()),
-  ),
+const jobHostIDs = computed(
+  () => new Map(jobs.value.map((job) => [job.id, [...resolveJobHostIDs(job, hosts.value)]])),
 );
+const {
+  rows: jobs,
+  load,
+  loading,
+  error,
+  total,
+  matched,
+  table,
+  sentinel,
+  nextCursor,
+  retry,
+} = useInfiniteTable(
+  async (params, signal) => {
+    const [jobResult, hostResult] = await Promise.all([
+      api(`/jobs?${params}`, { signal }),
+      params.has('cursor') ? Promise.resolve(null) : api('/hosts', { signal }),
+    ]);
+    return { ...jobResult, hosts: hostResult?.hosts };
+  },
+  'jobs',
+  () => emit('signed-out'),
+  {
+    filters: () => ({ q: query.value }),
+    applyResult: (result) => {
+      summaryController?.abort();
+      serverTimezone.value = result.server_timezone || 'server local time';
+      if (result.hosts) {
+        hosts.value = result.hosts;
+      }
+      if (!restored) {
+        restored = true;
+        void restoreExecution();
+      }
+    },
+  },
+);
+
+async function restoreExecution() {
+  const view = readExecutionView(window, props.currentUserId);
+  if (!view) {
+    return;
+  }
+  restoreController?.abort();
+  const controller = new AbortController();
+  restoreController = controller;
+  try {
+    let job = jobs.value.find((job) => job.id === view.jobID);
+    if (!job) {
+      const result = await api(`/jobs?ids=${encodeURIComponent(view.jobID)}`, {
+        signal: controller.signal,
+      });
+      job = result.jobs[0];
+    }
+    if (!controller.signal.aborted && job) {
+      execution.value = { job, runID: view.runID, hostID: view.hostID };
+    }
+  } catch (err) {
+    if (!controller.signal.aborted && err.status === 401) {
+      emit('signed-out');
+    }
+  }
+}
+
 onMounted(() => {
-  load();
   summaryTimer = window.setInterval(refreshSummaries, 10000);
 });
 onUnmounted(() => {
-  requestID++;
+  summaryController?.abort();
+  restoreController?.abort();
   window.clearInterval(summaryTimer);
 });
 
 async function refreshSummaries() {
-  if (loading.value || document.visibilityState === 'hidden') {
+  if (loading.value || document.visibilityState === 'hidden' || !jobs.value.length) {
     return;
   }
-  const request = ++requestID;
+  summaryController?.abort();
+  const controller = new AbortController();
+  summaryController = controller;
+  const ids = jobs.value.map((job) => job.id);
   try {
-    const result = await api('/jobs');
-    if (request === requestID) {
-      jobs.value = result.jobs;
+    const results = await Promise.all(
+      Array.from({ length: Math.ceil(ids.length / 100) }, (_, index) =>
+        api(
+          `/jobs?ids=${encodeURIComponent(ids.slice(index * 100, (index + 1) * 100).join(','))}`,
+          { signal: controller.signal },
+        ),
+      ),
+    );
+    if (!controller.signal.aborted && !loading.value) {
+      const updates = new Map(results.flatMap((result) => result.jobs).map((job) => [job.id, job]));
+      jobs.value = jobs.value.map((job) => updates.get(job.id) || job);
     }
   } catch (err) {
-    if (request === requestID && err.status === 401) {
+    if (!controller.signal.aborted && !loading.value && err.status === 401) {
       emit('signed-out');
     }
   }
 }
 
-async function load() {
-  const request = ++requestID;
-  loading.value = true;
-  error.value = '';
-  try {
-    const [jobResult, hostResult] = await Promise.all([api('/jobs'), api('/hosts')]);
-    if (request === requestID) {
-      jobs.value = jobResult.jobs;
-      serverTimezone.value = jobResult.server_timezone || 'server local time';
-      hosts.value = hostResult.hosts;
-      if (!restored) {
-        restored = true;
-        const view = readExecutionView(window, props.currentUserId);
-        const job = jobs.value.find((item) => item.id === view?.jobID);
-        if (job) {
-          execution.value = { job, runID: view.runID, hostID: view.hostID };
-        }
-      }
-    }
-  } catch (err) {
-    if (request !== requestID) {
-      return;
-    }
-    if (err.status === 401) {
-      emit('signed-out');
-    } else {
-      error.value = err.message;
-    }
-  } finally {
-    if (request === requestID) {
-      loading.value = false;
-    }
-  }
-}
 function rememberExecution(view) {
+  restoreController?.abort();
   writeExecutionView(window, props.currentUserId, {
     jobID: execution.value.job.id,
     ...view,
@@ -127,6 +155,7 @@ function openExecution(job, runID) {
   rememberExecution({ runID });
 }
 function closeExecution() {
+  restoreController?.abort();
   execution.value = null;
   writeExecutionView(window, props.currentUserId, null);
   void load();
@@ -136,7 +165,7 @@ async function start(job) {
     return;
   }
   starting.value = true;
-  error.value = '';
+  actionError.value = '';
   try {
     const result = await api(`/jobs/${job.id}/run`, {
       method: 'POST',
@@ -150,7 +179,7 @@ async function start(job) {
     };
     rememberExecution({ runID: result.run.id, hostID: result.run.hosts[0]?.host_id });
   } catch (err) {
-    error.value = err.message;
+    actionError.value = err.message;
     if (err.status === 401) {
       emit('signed-out');
     }
@@ -187,18 +216,10 @@ async function saved() {
     </PageHeading>
     <StatusMessage v-if="notice">{{ notice }}</StatusMessage>
     <StatusMessage
-      v-if="error"
+      v-if="actionError"
       variant="error"
     >
-      {{ error }}
-      <template #action>
-        <AppButton
-          variant="text"
-          @click="load"
-        >
-          Retry
-        </AppButton>
-      </template>
+      {{ actionError }}
     </StatusMessage>
     <section
       class="overflow-hidden rounded-[.65rem] border border-border bg-surface shadow-sm shadow-black/5 dark:shadow-black/20"
@@ -206,9 +227,7 @@ async function saved() {
       :aria-busy="loading"
     >
       <div class="flex flex-wrap items-center justify-between gap-3 px-4 py-3.5">
-        <span class="text-sm text-muted">
-          {{ jobs.length }} {{ jobs.length === 1 ? 'job' : 'jobs' }}
-        </span>
+        <span class="text-sm text-muted">{{ total }} {{ total === 1 ? 'job' : 'jobs' }}</span>
         <div class="flex min-w-0 items-center gap-2 max-[560px]:w-full">
           <AppButton
             variant="icon"
@@ -246,7 +265,10 @@ async function saved() {
           </div>
         </div>
       </div>
-      <div class="relative overflow-x-auto">
+      <div
+        ref="table"
+        class="relative overflow-x-auto"
+      >
         <table class="w-full min-w-[42rem] border-collapse text-left text-sm">
           <thead>
             <tr>
@@ -296,7 +318,7 @@ async function saved() {
           </thead>
           <tbody class="[&>tr:last-child>td]:border-b-0">
             <tr
-              v-for="job in filtered"
+              v-for="job in jobs"
               :key="job.id"
               class="h-16 hover:bg-surface-hover [&>td]:align-middle"
             >
@@ -310,17 +332,24 @@ async function saved() {
               </td>
               <td class="max-w-64 border-b border-border px-4 py-2.5 text-sm">
                 <span
-                  v-if="job.host_ids.length === 1"
+                  v-if="jobHostIDs.get(job.id).length === 1"
                   class="block truncate"
-                  :title="hostNames.get(job.host_ids[0]) || 'Unavailable host'"
+                  :title="hostNames.get(jobHostIDs.get(job.id)[0]) || 'Unavailable host'"
                 >
-                  {{ hostNames.get(job.host_ids[0]) || 'Unavailable host' }}
+                  {{ hostNames.get(jobHostIDs.get(job.id)[0]) || 'Unavailable host' }}
                 </span>
                 <span
                   v-else
                   class="text-muted"
                 >
-                  {{ job.host_ids.length }} hosts
+                  {{ jobHostIDs.get(job.id).length }} hosts
+                </span>
+                <span
+                  v-if="job.host_tags?.length"
+                  class="mt-1 block truncate text-xs text-muted"
+                  :title="job.host_tags.join(', ')"
+                >
+                  Tags: {{ job.host_tags.join(', ') }}
                 </span>
               </td>
               <td class="border-b border-border px-4 py-2.5 text-sm">
@@ -410,19 +439,7 @@ async function saved() {
                 </div>
               </td>
             </tr>
-            <tr v-if="loading && !jobs.length">
-              <td
-                colspan="7"
-                class="p-12 text-center text-sm text-muted"
-              >
-                <LoaderCircle
-                  class="mr-2 inline align-middle motion-safe:animate-spin"
-                  :size="20"
-                />
-                Loading&hellip;
-              </td>
-            </tr>
-            <tr v-else-if="!filtered.length">
+            <tr v-if="!loading && !error && !jobs.length">
               <td
                 colspan="7"
                 class="p-12 text-center text-sm text-muted"
@@ -437,7 +454,17 @@ async function saved() {
         v-if="query"
         class="border-t border-border px-4 py-3 text-xs text-muted"
       >
-        {{ filtered.length }} of {{ jobs.length }} jobs
+        {{ matched }} of {{ total }} jobs
+      </div>
+      <div
+        v-if="loading || error || nextCursor"
+        ref="sentinel"
+      >
+        <TableLoadState
+          :loading="loading"
+          :error="error"
+          @retry="retry"
+        />
       </div>
     </section>
     <ExecutionDialog

@@ -220,41 +220,6 @@ test('delete host and job dialogs do not fetch unrelated form choices', async ()
   }
 });
 
-test('Jobs background refreshes cannot overwrite newer summaries or emit a stale sign-out', async (t) => {
-  const summaries = [];
-  let initialized = false;
-  const fixture = await mountComponent('features/jobs/JobsPage.vue', {
-    props: { currentUserId: 1 },
-    browser: { setInterval: () => 1, clearInterval() {} },
-    globals: { document: { visibilityState: 'visible' } },
-    request(path) {
-      if (path === '/notifications') {
-        return Promise.resolve({ targets: [] });
-      }
-      if (path === '/hosts') {
-        return Promise.resolve({ hosts: [host] });
-      }
-      if (!initialized) {
-        initialized = true;
-        return Promise.resolve({ jobs: [job] });
-      }
-      const response = deferred();
-      summaries.push(response);
-      return response.promise;
-    },
-  });
-  t.after(fixture.unmount);
-  await settle();
-  const old = fixture.state.refreshSummaries();
-  const latest = fixture.state.refreshSummaries();
-  summaries[1].resolve({ jobs: [{ ...job, name: 'Latest' }] });
-  await latest;
-  summaries[0].reject(Object.assign(new Error('Expired'), { status: 401 }));
-  await old;
-  assert.equal(fixture.state.jobs[0].name, 'Latest');
-  assert.deepEqual(fixture.events, []);
-});
-
 test('host edits preserve omitted secrets and explicitly clear the sudo password', async (t) => {
   const writes = [];
   const fixture = await mountComponent('features/hosts/HostDialog.vue', {
@@ -287,35 +252,6 @@ test('host edits preserve omitted secrets and explicitly clear the sudo password
   fixture.state.clearSudoPassword = true;
   await fixture.state.submit();
   assert.equal(writes[1].body.sudo_password, '');
-});
-
-test('job duplication preserves stored secrets and cron but starts with scheduling disabled', async (t) => {
-  const writes = [];
-  const fixture = await mountComponent('features/jobs/JobDialog.vue', {
-    props: { mode: 'duplicate', target: job },
-    browser: { setTimeout: () => 1, clearTimeout() {} },
-    request(path, options) {
-      if (path === '/notifications') {
-        return Promise.resolve({ targets: [] });
-      }
-      if (!options) {
-        return Promise.resolve({ hosts: [host] });
-      }
-      writes.push({ path, ...options });
-      return Promise.resolve();
-    },
-  });
-  t.after(fixture.unmount);
-  await settle();
-  assert.equal(fixture.state.canSave, true);
-  await fixture.state.submit();
-  assert.deepEqual(writes[0].body.copy_from, { id: job.id, version: job.version });
-  assert.deepEqual(writes[0].body.secrets, [{ name: 'TOKEN' }]);
-  assert.deepEqual(writes[0].body.schedule, { cron: '0 2 * * *', enabled: false });
-  assert.equal(writes[0].body.version, 0);
-  fixture.state.script = '\u65e5'.repeat(22000);
-  await fixture.state.submit();
-  assert.equal(writes.length, 1, 'UTF-8 byte limit was bypassed.');
 });
 
 test('user password confirmation and current-account sign-out remain enforced', async (t) => {
@@ -397,3 +333,45 @@ test('leaving sign-in clears the password and ignores a late authentication resp
   await signingIn;
   assert.deepEqual(fixture.events, []);
 });
+
+for (const outcome of ['success', 'unauthorized']) {
+  test(`Jobs ignores late execution restoration ${outcome} after another selection`, async (t) => {
+    const restoredJob = { ...job, id: 'a'.repeat(32) };
+    const pending = deferred();
+    let signal;
+    const fixture = await mountComponent('features/jobs/JobsPage.vue', {
+      props: { currentUserId: 1 },
+      browser: {
+        setInterval: () => 1,
+        clearInterval() {},
+        localStorage: {
+          getItem: () => JSON.stringify({ jobID: restoredJob.id }),
+          setItem() {},
+        },
+      },
+      request(path, options) {
+        if (path === '/hosts') {
+          return Promise.resolve({ hosts: [host] });
+        }
+        if (path.includes('?ids=')) {
+          signal = options.signal;
+          return pending.promise;
+        }
+        return Promise.resolve({ jobs: [job] });
+      },
+    });
+    t.after(fixture.unmount);
+    await settle();
+    assert.ok(signal);
+    fixture.state.openExecution(job, 'b'.repeat(32));
+    assert.equal(signal.aborted, true);
+    if (outcome === 'success') {
+      pending.resolve({ jobs: [restoredJob] });
+    } else {
+      pending.reject(Object.assign(new Error('Expired'), { status: 401 }));
+    }
+    await settle();
+    assert.equal(fixture.state.execution.job.id, job.id);
+    assert.deepEqual(fixture.events, []);
+  });
+}

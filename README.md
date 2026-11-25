@@ -5,11 +5,12 @@ Run shell scripts on your servers over SSH from a web interface.
 ## Features
 
 - Run jobs across hosts sequentially or in parallel, manually or on a cron schedule.
+- Select or deselect job hosts individually or in bulk with search.
+- Target tags with individual exclusions, automatically including future tag members.
 - Follow live terminal output, answer prompts, and cancel individual hosts.
 - Manage SSH keys, encrypted passwords and job secrets, and host-key approvals.
 - Send webhook notifications with body templates and per-job target selection.
 - Keep run history and compressed logs in SQLite, PostgreSQL, MariaDB, or MySQL.
-  SQLite reclaims space incrementally; PostgreSQL/MariaDB reclaim while jobs are idle.
 - Automate through the [production API](API.md) with scoped personal keys.
 
 ## Install

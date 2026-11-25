@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"slices"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -48,6 +49,8 @@ type Input struct {
 	Name                  string             `json:"name"`
 	Script                string             `json:"script"`
 	HostIDs               []string           `json:"host_ids"`
+	HostTags              []string           `json:"host_tags"`
+	ExcludedHostIDs       []string           `json:"excluded_host_ids"`
 	ExecutionMode         string             `json:"execution_mode"`
 	RunAsSudo             bool               `json:"run_as_sudo"`
 	StopOnFailure         bool               `json:"stop_on_failure"`
@@ -60,8 +63,15 @@ func validID(id string) bool {
 }
 
 func validate(input Input) (store.Job, error) {
-	job := store.Job{NotificationTargetIDs: input.NotificationTargetIDs, Name: strings.TrimSpace(input.Name), Script: input.Script, HostIDs: input.HostIDs,
-		ExecutionMode: input.ExecutionMode, RunAsSudo: input.RunAsSudo, StopOnFailure: input.StopOnFailure, Version: input.Version}
+	job := store.Job{
+		NotificationTargetIDs: input.NotificationTargetIDs,
+		Name:                  strings.TrimSpace(input.Name),
+		Script:                input.Script,
+		ExecutionMode:         input.ExecutionMode,
+		RunAsSudo:             input.RunAsSudo,
+		StopOnFailure:         input.StopOnFailure,
+		Version:               input.Version,
+	}
 	nameLength := utf8.RuneCountInString(job.Name)
 	if !utf8.ValidString(job.Name) || nameLength < 1 || nameLength > 100 || strings.ContainsFunc(job.Name, unicode.IsControl) {
 		return job, invalid("name must contain 1-100 characters without control characters")
@@ -72,9 +82,20 @@ func validate(input Input) (store.Job, error) {
 	if job.ExecutionMode != "sequential" && job.ExecutionMode != "parallel" {
 		return job, invalid("execution mode must be sequential or parallel")
 	}
-	if len(job.HostIDs) < 1 || len(job.HostIDs) > 1000 {
-		return job, invalid("select between 1 and 1000 hosts")
+	if len(input.HostIDs)+len(input.HostTags) < 1 || len(input.HostIDs)+len(input.HostTags) > store.MaxJobHosts {
+		return job, invalid("select between 1 and 1000 individual hosts or tags")
 	}
+	job.HostIDs = append([]string{}, input.HostIDs...)
+	job.HostTags = []string{}
+	for _, tag := range input.HostTags {
+		tag = strings.TrimSpace(tag)
+		if !utf8.ValidString(tag) || utf8.RuneCountInString(tag) < 1 || utf8.RuneCountInString(tag) > 50 || strings.Contains(tag, ",") || strings.ContainsFunc(tag, unicode.IsControl) {
+			return job, invalid("host tags must contain 1-50 characters without commas or control characters")
+		}
+		job.HostTags = append(job.HostTags, tag)
+	}
+	slices.Sort(job.HostTags)
+	job.HostTags = slices.Compact(job.HostTags)
 	seen := make(map[string]bool, len(job.HostIDs))
 	for _, id := range job.HostIDs {
 		if !validID(id) || seen[id] {
@@ -82,6 +103,17 @@ func validate(input Input) (store.Job, error) {
 		}
 		seen[id] = true
 	}
+	if len(input.ExcludedHostIDs) > store.MaxJobHosts {
+		return job, invalid("exclude at most 1000 hosts")
+	}
+	job.ExcludedHostIDs = append([]string{}, input.ExcludedHostIDs...)
+	for _, id := range job.ExcludedHostIDs {
+		if !validID(id) || seen[id] {
+			return job, invalid("exclude valid hosts without duplicates or individually selected hosts")
+		}
+		seen[id] = true
+	}
+	slices.Sort(job.ExcludedHostIDs)
 	if len(job.NotificationTargetIDs) > store.MaxJobNotificationTargets {
 		return job, invalid("select at most 64 notification targets")
 	}
