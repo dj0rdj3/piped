@@ -83,6 +83,11 @@ func validAddress(address string) bool {
 	return true
 }
 
+func validID(id string) bool {
+	decoded, err := hex.DecodeString(id)
+	return err == nil && len(decoded) == 16
+}
+
 func validate(input Input) (store.Host, error) {
 	host := store.Host{Name: strings.TrimSpace(input.Name), Address: strings.TrimSpace(input.Address),
 		Port: input.Port, Username: strings.TrimSpace(input.Username), CredentialID: input.CredentialID,
@@ -147,11 +152,8 @@ func (s *Service) Save(ctx context.Context, actor store.Actor, id string, input 
 		bytes := make([]byte, 16)
 		_, _ = rand.Read(bytes)
 		id = hex.EncodeToString(bytes)
-	} else {
-		decoded, err := hex.DecodeString(id)
-		if err != nil || len(decoded) != 16 || input.Version < 1 {
-			return store.Host{}, invalid("provide a valid host ID and current version")
-		}
+	} else if !validID(id) || input.Version < 1 {
+		return store.Host{}, invalid("provide a valid host ID and current version")
 	}
 	host.ID = id
 	var password, sudoPassword []byte
@@ -175,8 +177,7 @@ func (s *Service) List(ctx context.Context, actor store.Actor) ([]store.Host, er
 	return s.store.Hosts(ctx, actor)
 }
 func (s *Service) Delete(ctx context.Context, actor store.Actor, id string, version int64) error {
-	decoded, err := hex.DecodeString(id)
-	if err != nil || len(decoded) != 16 || version < 1 {
+	if !validID(id) || version < 1 {
 		return invalid("provide a valid host ID and current version")
 	}
 	return s.store.DeleteHost(ctx, actor, id, version)

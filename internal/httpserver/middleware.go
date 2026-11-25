@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 
+	"piped/internal/httpserver/development"
 	"piped/internal/httpserver/response"
 	"piped/internal/store"
 )
@@ -32,7 +33,7 @@ func (s *Server) protect(next http.Handler) http.Handler {
 			// The custom header is not CORS-safelisted. No CORS permission is granted.
 			// Check Origin too, including requests from a different same-site origin.
 			origin := r.Header.Get("Origin")
-			keyAPI := s.config.Development && strings.HasPrefix(r.URL.Path, "/api/v1/")
+			keyAPI := strings.HasPrefix(r.URL.Path, "/api/v1/") || s.config.Development && development.KeyRequest(r.URL.Path)
 			if (!keyAPI && r.Header.Get("X-Piped-Request") != "1") || (origin != "" && origin != s.config.Origin) || r.Header.Get("Sec-Fetch-Site") == "cross-site" {
 				response.JSON(w, 403, map[string]string{"error": "cross-origin request rejected"})
 				return

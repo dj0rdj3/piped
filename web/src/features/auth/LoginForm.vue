@@ -1,5 +1,5 @@
 <script setup>
-import { ref } from 'vue';
+import { onUnmounted, ref } from 'vue';
 import { LoaderCircle, Terminal } from '@lucide/vue';
 import AppButton from '../../components/ui/AppButton.vue';
 import FormInput from '../../components/ui/FormInput.vue';
@@ -12,6 +12,11 @@ const username = ref('');
 const password = ref('');
 const error = ref('');
 const busy = ref(false);
+let mounted = true;
+onUnmounted(() => {
+  mounted = false;
+  password.value = '';
+});
 
 async function submit() {
   if (busy.value) {
@@ -25,9 +30,13 @@ async function submit() {
       method: 'POST',
       body: { username: username.value, password: password.value },
     });
-    emit('authenticated', result.user, result.development);
+    if (mounted) {
+      emit('authenticated', result.user, result.development);
+    }
   } catch (err) {
-    error.value = err.message;
+    if (mounted) {
+      error.value = err.message;
+    }
   } finally {
     password.value = '';
     busy.value = false;

@@ -34,7 +34,7 @@ export async function mountComponent(
   );
   const events = [];
   const listeners = Object.fromEntries(
-    component.emits.map((name) => [
+    (component.emits ?? []).map((name) => [
       'on' + name.replace(/(^|-)([a-z])/g, (_match, _separator, letter) => letter.toUpperCase()),
       (...args) => events.push([name, ...args]),
     ]),

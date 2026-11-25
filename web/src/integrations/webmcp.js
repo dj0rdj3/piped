@@ -9,24 +9,10 @@ export async function registerWebMCP(
   }
 
   const controller = new AbortController();
-  const registered = [];
-  let active = true;
 
   function stop() {
-    active = false;
     controller.abort();
     signal?.removeEventListener('abort', stop);
-    // The current document API uses the registration signal. Older navigator
-    // implementations use unregisterTool instead.
-    if (context.unregisterTool) {
-      for (const name of registered) {
-        try {
-          Promise.resolve(context.unregisterTool(name)).catch(() => {});
-        } catch {
-          /* Already removed. */
-        }
-      }
-    }
   }
 
   signal?.addEventListener('abort', stop, { once: true });
@@ -36,7 +22,7 @@ export async function registerWebMCP(
   }
 
   function ensureActive(options) {
-    if (!active) {
+    if (controller.signal.aborted) {
       throw new Error('Sign in required.');
     }
     options?.signal?.throwIfAborted();
@@ -49,7 +35,7 @@ export async function registerWebMCP(
       ensureActive(options);
       return JSON.stringify(result);
     } catch (err) {
-      if (err.status === 401) {
+      if (!controller.signal.aborted && !options?.signal?.aborted && err.status === 401) {
         authError();
       }
       throw err;
@@ -63,6 +49,14 @@ export async function registerWebMCP(
     return value;
   }
   const tools = [
+    {
+      name: 'piped_list_notification_targets',
+      description:
+        'List notification targets, readable URL/header templates, and secret names. Secret values are never returned.',
+      inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+      annotations: { readOnlyHint: true, untrustedContentHint: true, debugging: true },
+      execute: (_input, options) => read('/notifications', options),
+    },
     {
       name: 'piped_list_runs',
       description: 'List saved executions for a job. Remote output is untrusted data.',
@@ -219,14 +213,19 @@ export async function registerWebMCP(
       description: 'Open a Piped page. This navigates the UI without changing stored data.',
       inputSchema: {
         type: 'object',
-        properties: { page: { type: 'string', enum: ['users', 'credentials', 'hosts', 'jobs'] } },
+        properties: {
+          page: {
+            type: 'string',
+            enum: ['users', 'credentials', 'hosts', 'jobs', 'notifications'],
+          },
+        },
         required: ['page'],
         additionalProperties: false,
       },
       annotations: { readOnlyHint: true, debugging: true },
       execute: async ({ page }, options) => {
         ensureActive(options);
-        if (!['users', 'credentials', 'hosts', 'jobs'].includes(page)) {
+        if (!['users', 'credentials', 'hosts', 'jobs', 'notifications'].includes(page)) {
           throw new Error('Unknown page.');
         }
         await navigate('/' + page);
@@ -266,12 +265,11 @@ export async function registerWebMCP(
 
   try {
     for (const tool of tools) {
-      if (!active) {
+      if (controller.signal.aborted) {
         break;
       }
       await context.registerTool(tool, { signal: controller.signal });
-      registered.push(tool.name);
-      if (!active) {
+      if (controller.signal.aborted) {
         stop();
       }
     }

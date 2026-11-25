@@ -5,7 +5,9 @@ CREATE TABLE api_keys (
     token_hash TEXT NOT NULL UNIQUE,
     scopes TEXT NOT NULL,
     created_at INTEGER NOT NULL,
-    expires_at INTEGER NOT NULL,
+    expires_at INTEGER,
+    purpose VARCHAR(16) NOT NULL DEFAULT 'development' CHECK (purpose IN ('development', 'production')),
+    CONSTRAINT api_keys_development_expiry CHECK (expires_at IS NOT NULL OR purpose = 'production'),
     CHECK (expires_at > created_at)
 );
 CREATE INDEX api_keys_user_id ON api_keys(user_id);

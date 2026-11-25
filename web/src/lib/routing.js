@@ -1,5 +1,11 @@
 // Page URLs use the browser's history API without a router dependency.
 export function routeForPath(pathname) {
+  if (pathname === '/notifications' || pathname === '/notifications/') {
+    return 'notifications';
+  }
+  if (pathname === '/api-keys' || pathname === '/api-keys/') {
+    return 'api-keys';
+  }
   if (pathname === '/users' || pathname === '/users/') {
     return 'users';
   }
@@ -30,7 +36,7 @@ export function safeReturnPath(value) {
   }
   const url = new URL(value, 'https://piped.invalid');
   const route = routeForPath(url.pathname);
-  if (!['users', 'credentials', 'hosts', 'jobs'].includes(route)) {
+  if (!['users', 'credentials', 'hosts', 'jobs', 'api-keys', 'notifications'].includes(route)) {
     return '/jobs';
   }
   return canonicalPath(url.pathname) + url.search + url.hash;

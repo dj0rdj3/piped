@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -233,5 +234,103 @@ func TestDeletingAPIKeyOwnerRevokesCachedAccess(t *testing.T) {
 	var count int
 	if err := s.db.QueryRow("SELECT COUNT(*) FROM api_keys").Scan(&count); err != nil || count != 0 {
 		t.Fatal("owner deletion left orphaned keys")
+	}
+}
+
+func TestPersonalKeyManagementRejectsBearerStaleAndForeignAuthority(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	owner, err := s.InitAdmin(ctx, "owner", "owner-hash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := actorFor(t, s, owner, "owner-session")
+	now := time.Now().Unix()
+	key := APIKey{ID: "personal", UserID: owner.ID, Purpose: "production", Name: "Personal", Scopes: []string{ScopeUsersRead}, CreatedAt: now, ExpiresAt: now + 3600}
+	if err := s.CreateUserAPIKey(ctx, session, key, "personal-digest"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RevokeLocalAPIKey(ctx, key.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatal("internal CLI revoked a personal key")
+	}
+	bearer, err := s.ResolveAPIKey(ctx, "personal-digest", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.UserAPIKeys(ctx, bearer); !errors.Is(err, ErrForbidden) {
+		t.Fatal("bearer listed keys")
+	}
+	if err := s.RevokeUserAPIKey(ctx, bearer, key.ID); !errors.Is(err, ErrForbidden) {
+		t.Fatal("bearer revoked a key")
+	}
+	other, err := s.CreateUser(ctx, session, "other", "other-hash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherSession := actorFor(t, s, other, "other-session")
+	if err := s.CreateUserAPIKey(ctx, otherSession, key, "wrong-owner"); !errors.Is(err, ErrForbidden) {
+		t.Fatal("key created for another owner")
+	}
+	if err := s.RevokeUserAPIKey(ctx, otherSession, key.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatal("cross-owner revocation")
+	}
+	if err := s.DeleteSession(ctx, session.SessionHash); err != nil {
+		t.Fatal(err)
+	}
+	key.ID = "stale-key"
+	if err := s.CreateUserAPIKey(ctx, session, key, "stale-digest"); !errors.Is(err, ErrUnauthorized) {
+		t.Fatal("stale session created key")
+	}
+	if err := s.RevokeUserAPIKey(ctx, session, "personal"); !errors.Is(err, ErrUnauthorized) {
+		t.Fatal("stale session revoked key")
+	}
+}
+
+func TestNoExpirationKeysSurviveCleanupAndHonorRevocation(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	owner, err := s.InitAdmin(ctx, "owner", "owner-hash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := actorFor(t, s, owner, "owner-session")
+	key := APIKey{ID: "no-expiration", Name: "No expiration", Purpose: "production", UserID: owner.ID, Scopes: []string{ScopeUsersRead, ScopeUsersWrite}, CreatedAt: time.Now().Unix()}
+	if err := s.CreateUserAPIKey(ctx, session, key, "no-expiration-digest"); err != nil {
+		t.Fatal(err)
+	}
+	var expiry sql.NullInt64
+	if err := s.db.QueryRow("SELECT expires_at FROM api_keys WHERE id = ?", key.ID).Scan(&expiry); err != nil || expiry.Valid {
+		t.Fatalf("no-expiration key must use NULL in storage: %v", err)
+	}
+	future := time.Now().AddDate(100, 0, 0)
+	if err := s.PurgeAPIKeys(ctx, future); err != nil {
+		t.Fatal(err)
+	}
+	actor, err := s.ResolveAPIKey(ctx, "no-expiration-digest", future.Unix())
+	if err != nil {
+		t.Fatal("no-expiration key expired or was purged", err)
+	}
+	keys, err := s.UserAPIKeys(ctx, session)
+	if err != nil || len(keys) != 1 || keys[0].ExpiresAt != 0 {
+		t.Fatalf("wrong no-expiration metadata: %v", err)
+	}
+	if _, err := s.CreateUser(ctx, actor, "created-with-key", "hash"); err != nil {
+		t.Fatal("no-expiration key failed transactional authorization", err)
+	}
+	if err := s.RevokeUserAPIKey(ctx, session, key.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Authorize(ctx, actor, ScopeUsersRead); !errors.Is(err, ErrUnauthorized) {
+		t.Fatal("revoked no-expiration key remained authorized")
+	}
+	key.ID = "password-revoked"
+	if err := s.CreateUserAPIKey(ctx, session, key, "password-digest"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ChangePassword(ctx, session, owner.ID, "new-owner-hash"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ResolveAPIKey(ctx, "password-digest", time.Now().Unix()); !errors.Is(err, ErrUnauthorized) {
+		t.Fatal("password change retained a no-expiration key")
 	}
 }

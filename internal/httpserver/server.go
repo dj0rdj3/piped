@@ -17,14 +17,18 @@ import (
 	"piped/internal/execution"
 	"piped/internal/hosts"
 	"piped/internal/httpserver/development"
+	"piped/internal/httpserver/keyauth"
 	"piped/internal/httpserver/response"
 	"piped/internal/httpserver/terminal"
 	"piped/internal/jobs"
+	"piped/internal/notifications"
+	"piped/internal/store"
 )
 
 const DevelopmentBuild = development.Enabled
 
 type Config struct {
+	Notifications  *notifications.Service
 	Origin         string
 	Listen         string
 	Assets         fs.FS
@@ -101,9 +105,27 @@ func New(a *auth.Service, c Config) (http.Handler, error) {
 	mux.HandleFunc("POST /api/auth/login", s.endpoint(s.login, false))
 	mux.HandleFunc("POST /api/auth/logout", s.endpoint(s.logout, false))
 	mux.HandleFunc("GET /api/auth/me", s.endpoint(s.me, true))
+	mux.HandleFunc("GET /api/api-keys", s.endpoint(s.listAPIKeys, true))
+	mux.HandleFunc("POST /api/api-keys", s.endpoint(s.createAPIKey, true))
+	mux.HandleFunc("DELETE /api/api-keys/{id}", s.endpoint(s.revokeAPIKey, true))
 	routes := s.resourceRoutes()
 	for _, route := range routes {
 		mux.HandleFunc(route.Method+" /api"+route.Path, s.endpoint(route.Handler, true))
+	}
+	apiRoutes := append(append([]response.Route{}, routes...), response.Route{Method: "GET", Path: "/me", Handler: s.me})
+	for _, route := range apiRoutes {
+		mux.Handle(route.Method+" /api/v1"+route.Path, keyauth.New(keyauth.Config{
+			Origin: c.Origin, Listen: c.Listen, Logger: c.Logger, Allow: s.apiLimiter.allow, ClientIP: s.clientIP,
+			Resolve: a.ResolveUserAPIKey,
+		}, func(w http.ResponseWriter, r *http.Request, actor store.Actor) {
+			if route.Scope != "" && !store.HasScope(actor.Scopes, route.Scope) {
+				response.WriteError(w, store.ErrForbidden, c.Logger)
+				return
+			}
+			if err := route.Handler(w, r, actor); err != nil {
+				response.WriteError(w, err, c.Logger)
+			}
+		}))
 	}
 	if c.Executions != nil {
 		// Terminal sockets accept browser sessions only, never bearer keys.
@@ -112,7 +134,7 @@ func New(a *auth.Service, c Config) (http.Handler, error) {
 	if c.Development {
 		development.Register(mux, development.Config{
 			Auth: a, Origin: c.Origin, Listen: c.Listen, Logger: c.Logger,
-			Credentials: c.Credentials, Hosts: c.Hosts, Jobs: c.Jobs, Executions: c.Executions,
+			Credentials: c.Credentials, Hosts: c.Hosts, Jobs: c.Jobs, Executions: c.Executions, Notifications: c.Notifications,
 			Allow: s.apiLimiter.allow, ClientIP: s.clientIP,
 		}, routes, s.me)
 	}

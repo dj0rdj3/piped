@@ -16,8 +16,8 @@ func TestHostDevelopmentAPIAndMCP(t *testing.T) {
 	_, token := h.issueKey(t, store.ScopeHostsRead, store.ScopeHostsWrite)
 	_, readToken := h.issueKey(t, store.ScopeHostsRead)
 	input := hostBody()
-	expect(t, h.bearerRequest("POST", "/api/v1/hosts", readToken, input, nil), 403)
-	w := h.bearerRequest("POST", "/api/v1/hosts", token, input, nil)
+	expect(t, h.bearerRequest("POST", "/api/development/v1/hosts", readToken, input, nil), 403)
+	w := h.bearerRequest("POST", "/api/development/v1/hosts", token, input, nil)
 	expect(t, w, 201)
 	assertNoHostSecrets(t, w.Body.String())
 	host := responseHost(t, w)
@@ -56,7 +56,7 @@ func TestHostDevelopmentAPIAndMCP(t *testing.T) {
 	if !strings.Contains(string(encoded), `"removed":true`) {
 		t.Fatalf("MCP delete failed: %s", encoded)
 	}
-	listed := h.bearerRequest("GET", "/api/v1/hosts", readToken, nil, nil)
+	listed := h.bearerRequest("GET", "/api/development/v1/hosts", readToken, nil, nil)
 	expect(t, listed, 200)
 	if listed.Body.String() != "{\"hosts\":[]}\n" {
 		t.Fatal("deleted host still listed")
@@ -65,5 +65,5 @@ func TestHostDevelopmentAPIAndMCP(t *testing.T) {
 	if err := h.store.RevokeLocalAPIKey(context.Background(), key.ID); err != nil {
 		t.Fatal(err)
 	}
-	expect(t, h.bearerRequest("POST", "/api/v1/hosts", revokedToken, hostBody(), nil), 401)
+	expect(t, h.bearerRequest("POST", "/api/development/v1/hosts", revokedToken, hostBody(), nil), 401)
 }

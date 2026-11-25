@@ -13,7 +13,7 @@ func (s *Server) assets(w http.ResponseWriter, r *http.Request) {
 	}
 	name := strings.TrimPrefix(r.URL.Path, "/")
 	switch r.URL.Path {
-	case "/", "/login", "/login/", "/users", "/users/", "/credentials", "/credentials/", "/hosts", "/hosts/", "/jobs", "/jobs/":
+	case "/notifications", "/notifications/", "/api-keys", "/api-keys/", "/", "/login", "/login/", "/users", "/users/", "/credentials", "/credentials/", "/hosts", "/hosts/", "/jobs", "/jobs/":
 		// Only known UI routes receive the SPA document. Missing assets and API
 		// endpoints must retain their real 404s and content types.
 		r = r.Clone(r.Context())

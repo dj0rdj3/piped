@@ -7,6 +7,7 @@ import (
 	"database/sql/driver"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -91,6 +92,19 @@ func (s *Store) applyMigrations(ctx context.Context, conn migrationConnection) e
 	if err != nil {
 		return err
 	}
+	checksums := make([]string, len(entries))
+	bodies := make([][]byte, len(entries))
+	for index, entry := range entries {
+		version, err := strconv.Atoi(strings.Split(entry.Name(), "_")[0])
+		if err != nil || version != index+1 {
+			return errors.New("invalid database migration sequence")
+		}
+		bodies[index], err = migrations.ReadFile(directory + "/" + entry.Name())
+		if err != nil {
+			return err
+		}
+		checksums[index] = fmt.Sprintf("%x", sha256.Sum256(bodies[index]))
+	}
 	rows, err := conn.QueryContext(ctx, "SELECT version, checksum FROM schema_migrations ORDER BY version")
 	if err != nil {
 		return err
@@ -114,22 +128,13 @@ func (s *Store) applyMigrations(ctx context.Context, conn migrationConnection) e
 	if err := rows.Close(); err != nil {
 		return err
 	}
-	for index, entry := range entries {
-		version, err := strconv.Atoi(strings.Split(entry.Name(), "_")[0])
-		if err != nil || version != index+1 {
-			return errors.New("invalid database migration sequence")
-		}
-		body, err := migrations.ReadFile(directory + "/" + entry.Name())
-		if err != nil {
-			return err
-		}
-		checksum := fmt.Sprintf("%x", sha256.Sum256(body))
-		if version <= len(applied) {
-			if applied[index] != checksum {
-				return fmt.Errorf("migration %d checksum mismatch or incomplete migration; restore the database backup before retrying", version)
-			}
-			continue
-		}
+	// Validate the entire existing history before applying any new DDL.
+	if len(applied) > len(checksums) || !slices.Equal(applied, checksums[:len(applied)]) {
+		return errors.New("database migration checksum mismatch or incomplete migration; restore a backup or reset the development database")
+	}
+	for index := len(applied); index < len(bodies); index++ {
+		body := bodies[index]
+		version, checksum := index+1, checksums[index]
 		if err := exec("INSERT INTO schema_migrations(version, checksum) VALUES (?, 'pending')", version); err != nil {
 			return err
 		}

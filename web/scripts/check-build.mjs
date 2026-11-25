@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { Buffer } from 'node:buffer';
 import { spawnSync } from 'node:child_process';
 import { readdir, readFile } from 'node:fs/promises';
 import { argv } from 'node:process';
@@ -11,12 +12,7 @@ assert.ok(scripts.length > 0, 'JavaScript assets are missing.');
 let hasWebMCP = false;
 for (const entry of scripts) {
   const source = await readFile(new URL(entry, assets), 'utf8');
-  for (const marker of [
-    '/api-keys',
-    '/development/keys',
-    'Development API key',
-    'Create API key',
-  ]) {
+  for (const marker of ['/development/keys', 'Development API key']) {
     assert.ok(
       !source.includes(marker),
       `${entry} contains an internal API user interface: ${marker}`,
@@ -28,7 +24,9 @@ for (const entry of scripts) {
   }
 }
 assert.equal(hasWebMCP, development, 'WebMCP assets must exist only in development builds.');
-console.log(`${development ? 'Development' : 'Production'} assets verified; no API-key GUI.`);
+console.log(
+  `${development ? 'Development' : 'Production'} assets verified; internal tooling remains isolated.`,
+);
 
 if (binary) {
   const metadata = spawnSync('go', ['version', '-m', binary], { encoding: 'utf8' });
@@ -53,9 +51,9 @@ if (binary) {
   });
   assert.equal(symbols.status, 0, 'Could not inspect binary symbols.');
   assert.equal(
-    symbols.stdout.includes('piped/internal/auth.NewAPIKey'),
+    symbols.stdout.includes('piped/internal/store.(*Store).CreateLocalAPIKey'),
     development,
-    'API key issuance must be linked only in development binaries.',
+    'Internal CLI key issuance must be linked only in development binaries.',
   );
   assert.equal(
     symbols.stdout.includes('piped/internal/httpserver/development.(*server).developmentAuth'),
@@ -67,11 +65,19 @@ if (binary) {
       'github.com/modelcontextprotocol/',
       'piped/internal/httpserver/development.(*server).',
       'piped/internal/store.(*Store).CreateLocalAPIKey',
-      'piped/internal/store.(*Store).ResolveAPIKey',
       'piped/internal/store.(*Store).DeleteCompletedRun',
+      'piped/internal/auth.(*Service).ResolveAPIKey',
     ]) {
       assert.ok(!symbols.stdout.includes(marker), `Production binary contains ${marker}.`);
     }
+  }
+  const executable = await readFile(binary);
+  for (const marker of ['/api/development/v1', 'piped_dev_']) {
+    assert.equal(
+      executable.includes(Buffer.from(marker)),
+      development,
+      `Internal development marker must exist only in development binaries: ${marker}`,
+    );
   }
   console.log(`${development ? 'Development' : 'Production'} binary verified.`);
 }

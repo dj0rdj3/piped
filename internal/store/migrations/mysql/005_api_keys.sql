@@ -5,7 +5,9 @@ CREATE TABLE api_keys (
     token_hash VARCHAR(64) NOT NULL UNIQUE,
     scopes TEXT NOT NULL,
     created_at BIGINT NOT NULL,
-    expires_at BIGINT NOT NULL,
+    expires_at BIGINT,
+    purpose VARCHAR(16) NOT NULL DEFAULT 'development' CHECK (purpose IN ('development', 'production')),
+    CONSTRAINT api_keys_development_expiry CHECK (expires_at IS NOT NULL OR purpose = 'production'),
     CHECK (expires_at > created_at),
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;

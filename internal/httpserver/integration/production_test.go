@@ -15,10 +15,9 @@ func TestProductionCannotEnableDevelopmentIntegrations(t *testing.T) {
 	h := newHarness(t, false)
 	cookie := h.login(t, "admin", testPassword)
 	for _, path := range []string{
-		"/api/v1/hosts", "/api/v1/jobs", "/api/v1/credentials", "/api/v1/users", "/api/v1/me",
-		"/api/v1/jobs/missing/run", "/api/v1/runs/missing", "/api/v1/jobs/schedule-preview",
-		"/api/v1/runs/missing/hosts/missing/input", "/api/v1/runs/missing/hosts/missing/cancel",
-		"/api/development/keys", "/mcp", "/mcp/", "/api-keys", "/api-keys/",
+		"/api/development/v1/users", "/api/development/v1/me", "/api/development/v1/credentials",
+		"/api/development/v1/notifications", "/api/development/v1/jobs", "/api/development/v1/hosts", "/api/development/v1/runs/missing",
+		"/api/development/keys", "/mcp", "/mcp/",
 	} {
 		for _, method := range []string{"GET", "POST", "PUT", "PATCH", "DELETE"} {
 			response := h.request(method, path, map[string]string{}, cookie)

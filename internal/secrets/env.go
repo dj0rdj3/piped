@@ -15,16 +15,6 @@ import (
 
 const envKey = "PIPED_ENCRYPTION_KEY"
 
-// LoadEnv reads a deliberately small .env format, without shell execution,
-// interpolation, or process-environment overrides.
-func LoadEnv(path string) (*Vault, error) {
-	configuration, err := LoadConfiguration(path)
-	if err != nil {
-		return nil, err
-	}
-	return configuration.Vault, nil
-}
-
 type Configuration struct {
 	Vault            *Vault
 	DatabaseDriver   string

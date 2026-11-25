@@ -1,6 +1,6 @@
 <script setup>
 import { computed, onUnmounted, ref } from 'vue';
-import { Check, Copy, KeyRound, LoaderCircle } from '@lucide/vue';
+import { Check, Copy, KeyRound, LoaderCircle, Trash2 } from '@lucide/vue';
 import AppButton from '../../components/ui/AppButton.vue';
 import AppDialog from '../../components/ui/AppDialog.vue';
 import FormInput from '../../components/ui/FormInput.vue';
@@ -108,12 +108,10 @@ async function submit() {
   busy.value = true;
   error.value = '';
   try {
-    const body = {};
     let credential = null;
 
     if (props.mode === 'import' || props.mode === 'generate') {
-      body.name = name.value;
-      body.mode = props.mode;
+      const body = { name: name.value, mode: props.mode };
       if (props.mode === 'import') {
         body.private_key = privateKey.value;
         body.public_key = publicKey.value;
@@ -124,10 +122,10 @@ async function submit() {
     } else if (props.mode === 'rename') {
       await api(`/credentials/${props.target.id}`, {
         method: 'PATCH',
-        body: { ...body, name: name.value },
+        body: { name: name.value },
       });
     } else {
-      await api(`/credentials/${props.target.id}`, { method: 'DELETE', body });
+      await api(`/credentials/${props.target.id}`, { method: 'DELETE', body: {} });
     }
 
     privateKey.value = '';
@@ -156,15 +154,22 @@ async function submit() {
     :title="currentMode.title"
     title-id="credential-dialog-title"
     :busy="busy"
-    wide
+    :wide="mode !== 'delete'"
     @close="emit('close')"
   >
     <template #icon>
-      <KeyRound :size="21" />
+      <Trash2
+        v-if="mode === 'delete'"
+        :size="21"
+      />
+      <KeyRound
+        v-else
+        :size="21"
+      />
     </template>
 
     <template v-if="mode === 'public'">
-      <p class="text-sm leading-relaxed text-muted">{{ target.name }}</p>
+      <p class="text-sm leading-relaxed text-muted [overflow-wrap:anywhere]">{{ target.name }}</p>
       <div class="my-4">
         <FormInput
           id="credential-public-key"
@@ -236,7 +241,7 @@ async function submit() {
         class="text-sm leading-relaxed text-muted"
       >
         Permanently remove
-        <strong>{{ target.name }}</strong>
+        <strong class="[overflow-wrap:anywhere]">{{ target.name }}</strong>
         ?
       </p>
 

@@ -15,6 +15,7 @@ import (
 	"piped/internal/hosts"
 	"piped/internal/httpserver/response"
 	"piped/internal/jobs"
+	"piped/internal/notifications"
 	"piped/internal/store"
 )
 
@@ -94,6 +95,8 @@ func (s *server) mcpError(err error) error {
 	switch {
 	case errors.Is(err, jobs.ErrInput), errors.Is(err, store.ErrJobName),
 		errors.Is(err, store.ErrJobChanged), errors.Is(err, store.ErrJobHost), errors.Is(err, store.ErrJobSecret),
+		errors.Is(err, store.ErrJobNotification), errors.Is(err, store.ErrJobNotificationLimit),
+		errors.Is(err, notifications.ErrInput), errors.Is(err, store.ErrNotificationType), errors.Is(err, store.ErrNotificationSecret), errors.Is(err, store.ErrNotificationChanged), errors.Is(err, store.ErrNotificationInUse),
 		errors.Is(err, store.ErrHostInUse), errors.Is(err, hosts.ErrInput),
 		errors.Is(err, store.ErrHostName), errors.Is(err, store.ErrHostChanged),
 		errors.Is(err, store.ErrHostCredential), errors.Is(err, store.ErrHostPassword):
@@ -179,6 +182,7 @@ func (s *server) newMCPServer(actor store.Actor) *mcp.Server {
 			err := s.config.Auth.Store.DeleteUser(ctx, actor, input.ID)
 			return map[string]bool{"removed": err == nil}, err
 		})
+	s.registerNotificationMCPTools(server, actor)
 	s.registerHostMCPTools(server, actor)
 	s.registerJobMCPTools(server, actor)
 	s.registerExecutionMCPTools(server, actor)
@@ -257,17 +261,18 @@ func (s *server) registerHostMCPTools(server *mcp.Server, actor store.Actor) {
 
 // Job tools manage definitions only; scripts are never executed here.
 type saveJobToolInput struct {
-	CopyFrom      *store.JobCopy     `json:"copy_from,omitempty"`
-	Schedule      *store.JobSchedule `json:"schedule,omitempty"`
-	Secrets       []jobs.SecretInput `json:"secrets,omitempty"`
-	ID            string             `json:"id,omitempty"`
-	Name          string             `json:"name"`
-	Script        string             `json:"script"`
-	HostIDs       []string           `json:"host_ids"`
-	ExecutionMode string             `json:"execution_mode"`
-	RunAsSudo     bool               `json:"run_as_sudo,omitempty"`
-	StopOnFailure bool               `json:"stop_on_failure"`
-	Version       int64              `json:"version,omitempty"`
+	NotificationTargetIDs []string           `json:"notification_target_ids,omitempty"`
+	CopyFrom              *store.JobCopy     `json:"copy_from,omitempty"`
+	Schedule              *store.JobSchedule `json:"schedule,omitempty"`
+	Secrets               []jobs.SecretInput `json:"secrets,omitempty"`
+	ID                    string             `json:"id,omitempty"`
+	Name                  string             `json:"name"`
+	Script                string             `json:"script"`
+	HostIDs               []string           `json:"host_ids"`
+	ExecutionMode         string             `json:"execution_mode"`
+	RunAsSudo             bool               `json:"run_as_sudo,omitempty"`
+	StopOnFailure         bool               `json:"stop_on_failure"`
+	Version               int64              `json:"version,omitempty"`
 }
 type deleteJobToolInput struct {
 	ID      string `json:"id"`
@@ -289,7 +294,7 @@ func (s *server) registerJobMCPTools(server *mcp.Server, actor store.Actor) {
 			items, err := s.config.Jobs.List(ctx, actor)
 			return map[string]any{"jobs": items, "server_timezone": jobs.ServerTimezone()}, err
 		})
-	registerMCPTool(s, server, actor, "save_job", "Create or update a job definition. Updates require id and current version. Secret values are write-only. Omit secrets to preserve them; a provided array replaces the list, with omitted values preserving named secrets. An empty array removes all secrets. Host IDs are ordered. run_as_sudo requests elevation only on hosts with sudo enabled. schedule uses five-field server-timezone cron. On creation, copy_from with source id/version copies encrypted secrets server-side and requires jobs:read; omitted secret values keep source values. Copies do not inherit an enabled schedule; explicitly enabling one requires runs:write. Enabled schedules also require runs:write. Omit schedule to preserve it. Does not run the script immediately.", store.ScopeJobsWrite, true,
+	registerMCPTool(s, server, actor, "save_job", "Create or update a job definition. Updates require id and current version. Secret values are write-only. Omit secrets to preserve them; a provided array replaces the list, with omitted values preserving named secrets. An empty array removes all secrets. Host IDs are ordered. notification_target_ids selects webhook targets; omit to preserve on edit, copy source selections on duplication, or use defaults on creation. An empty array disables notifications. run_as_sudo requests elevation only on hosts with sudo enabled. schedule uses five-field server-timezone cron. On creation, copy_from with source id/version copies encrypted secrets server-side and requires jobs:read; omitted secret values keep source values. Copies do not inherit an enabled schedule; explicitly enabling one requires runs:write. Enabled schedules also require runs:write. Omit schedule to preserve it. Does not run the script immediately.", store.ScopeJobsWrite, true,
 		func(ctx context.Context, input saveJobToolInput) (any, error) {
 			defer func() {
 				for index := range input.Secrets {
@@ -297,7 +302,7 @@ func (s *server) registerJobMCPTools(server *mcp.Server, actor store.Actor) {
 				}
 			}()
 			job, err := s.config.Jobs.Save(ctx, actor, input.ID, jobs.Input{
-				Name: input.Name, Script: input.Script, HostIDs: input.HostIDs, ExecutionMode: input.ExecutionMode,
+				Name: input.Name, Script: input.Script, HostIDs: input.HostIDs, ExecutionMode: input.ExecutionMode, NotificationTargetIDs: input.NotificationTargetIDs,
 				CopyFrom: input.CopyFrom, Schedule: input.Schedule, Secrets: input.Secrets, RunAsSudo: input.RunAsSudo, StopOnFailure: input.StopOnFailure, Version: input.Version,
 			})
 			return map[string]any{"job": job}, err

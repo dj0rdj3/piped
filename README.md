@@ -7,7 +7,9 @@ Run shell scripts on your servers over SSH from a web interface.
 - Run jobs across hosts sequentially or in parallel, manually or on a cron schedule.
 - Follow live terminal output, answer prompts, and cancel individual hosts.
 - Manage SSH keys, encrypted passwords and job secrets, and host-key approvals.
+- Send webhook notifications with body templates and per-job target selection.
 - Keep run history in SQLite, PostgreSQL, MariaDB, or MySQL.
+- Automate through the [production API](API.md) with scoped personal keys.
 
 ## Install
 
@@ -19,7 +21,7 @@ make build
 ```
 
 Setup installs the required tools and dependencies. Already have a binary? Skip the build.
-For Docker builds and development setup, see [DEV.md](DEV.md).
+For Docker builds, development, and cache maintenance, see [DEV.md](DEV.md).
 
 Create the encryption key and first administrator, then start Piped:
 

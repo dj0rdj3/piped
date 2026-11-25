@@ -12,6 +12,10 @@ test('workspace entry URLs select the correct page and canonical path', () => {
   for (const [path, page] of [
     ['/', 'jobs'],
     ['/users', 'users'],
+    ['/notifications', 'notifications'],
+    ['/notifications/', 'notifications'],
+    ['/api-keys', 'api-keys'],
+    ['/api-keys/', 'api-keys'],
     ['/users/', 'users'],
     ['/credentials', 'credentials'],
     ['/credentials/', 'credentials'],
@@ -27,8 +31,6 @@ test('workspace entry URLs select the correct page and canonical path', () => {
     '/credentials/new',
     '/unknown',
     '/assets/missing.js',
-    '/api-keys',
-    '/api-keys/',
   ]) {
     assert.equal(routeForPath(path), null);
     assert.equal(canonicalPath(path), path);
@@ -37,6 +39,8 @@ test('workspace entry URLs select the correct page and canonical path', () => {
 
 test('sign-in has its own URL and preserves safe workspace return destinations', () => {
   assert.equal(sessionPath({ pathname: '/credentials' }, false), '/login?next=%2Fcredentials');
+  assert.equal(sessionPath({ pathname: '/api-keys' }, false), '/login?next=%2Fapi-keys');
+  assert.equal(safeReturnPath('/api-keys/'), '/api-keys');
   assert.equal(sessionPath({ pathname: '/users' }, false), '/login?next=%2Fusers');
   assert.equal(sessionPath({ pathname: '/login' }, false), '/login');
   assert.equal(
@@ -88,7 +92,7 @@ test('login return destinations cannot redirect outside the app or loop through 
     );
   }
   assert.equal(safeReturnPath('/credentials/'), '/credentials');
-  assert.equal(safeReturnPath('/api-keys/'), '/jobs');
+  assert.equal(safeReturnPath('/api-keys/'), '/api-keys');
   assert.equal(safeReturnPath('/'), '/jobs');
 });
 

@@ -10,7 +10,7 @@ export default defineConfig(({ mode }) => ({
     port: 5173,
     strictPort: true,
     proxy: {
-      '/api': { target: 'http://127.0.0.1:8080', ws: true },
+      '/api/': { target: 'http://127.0.0.1:8080', ws: true },
       '/mcp': 'http://127.0.0.1:8080',
     },
   },

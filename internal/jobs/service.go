@@ -41,16 +41,17 @@ func New(ctx context.Context, db *store.Store, vault *secrets.Vault) (*Service, 
 }
 
 type Input struct {
-	CopyFrom      *store.JobCopy     `json:"copy_from,omitempty"`
-	Schedule      *store.JobSchedule `json:"schedule,omitempty"`
-	Secrets       []SecretInput      `json:"secrets,omitempty"`
-	Name          string             `json:"name"`
-	Script        string             `json:"script"`
-	HostIDs       []string           `json:"host_ids"`
-	ExecutionMode string             `json:"execution_mode"`
-	RunAsSudo     bool               `json:"run_as_sudo"`
-	StopOnFailure bool               `json:"stop_on_failure"`
-	Version       int64              `json:"version"`
+	NotificationTargetIDs []string           `json:"notification_target_ids,omitempty"`
+	CopyFrom              *store.JobCopy     `json:"copy_from,omitempty"`
+	Schedule              *store.JobSchedule `json:"schedule,omitempty"`
+	Secrets               []SecretInput      `json:"secrets,omitempty"`
+	Name                  string             `json:"name"`
+	Script                string             `json:"script"`
+	HostIDs               []string           `json:"host_ids"`
+	ExecutionMode         string             `json:"execution_mode"`
+	RunAsSudo             bool               `json:"run_as_sudo"`
+	StopOnFailure         bool               `json:"stop_on_failure"`
+	Version               int64              `json:"version"`
 }
 
 func validID(id string) bool {
@@ -59,9 +60,10 @@ func validID(id string) bool {
 }
 
 func validate(input Input) (store.Job, error) {
-	job := store.Job{Name: strings.TrimSpace(input.Name), Script: input.Script, HostIDs: input.HostIDs,
+	job := store.Job{NotificationTargetIDs: input.NotificationTargetIDs, Name: strings.TrimSpace(input.Name), Script: input.Script, HostIDs: input.HostIDs,
 		ExecutionMode: input.ExecutionMode, RunAsSudo: input.RunAsSudo, StopOnFailure: input.StopOnFailure, Version: input.Version}
-	if !utf8.ValidString(job.Name) || utf8.RuneCountInString(job.Name) < 1 || utf8.RuneCountInString(job.Name) > 100 || strings.ContainsFunc(job.Name, unicode.IsControl) {
+	nameLength := utf8.RuneCountInString(job.Name)
+	if !utf8.ValidString(job.Name) || nameLength < 1 || nameLength > 100 || strings.ContainsFunc(job.Name, unicode.IsControl) {
 		return job, invalid("name must contain 1-100 characters without control characters")
 	}
 	if !utf8.ValidString(job.Script) || strings.TrimSpace(job.Script) == "" || len(job.Script) > MaxScriptBytes || strings.ContainsRune(job.Script, 0) {
@@ -79,6 +81,16 @@ func validate(input Input) (store.Job, error) {
 			return job, invalid("select valid hosts without duplicates")
 		}
 		seen[id] = true
+	}
+	if len(job.NotificationTargetIDs) > store.MaxJobNotificationTargets {
+		return job, invalid("select at most 64 notification targets")
+	}
+	seenTargets := map[string]bool{}
+	for _, id := range job.NotificationTargetIDs {
+		if !validID(id) || seenTargets[id] {
+			return job, invalid("select valid notification targets without duplicates")
+		}
+		seenTargets[id] = true
 	}
 	if input.Schedule != nil {
 		schedule := *input.Schedule

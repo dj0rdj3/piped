@@ -49,7 +49,8 @@ make web-dev
 ```
 
 Open [http://127.0.0.1:5173](http://127.0.0.1:5173), using `127.0.0.1` rather than
-`localhost`. Vite proxies API and terminal traffic to the backend on port 8080.
+`localhost`. Vite proxies `/api/` requests and terminal traffic to the backend on port 8080;
+page URLs such as `/api-keys` are served by Vite.
 Development uses the existing `.env`, database, and accounts. Tests use temporary fixtures.
 
 For a standalone development server, run `make build-dev`, then
@@ -86,6 +87,8 @@ Run Make commands from the repository root.
 Docker commands require Docker Engine with Buildx/BuildKit. Container checks clean up
 their disposable resources. Setup reports go to `test-results/setup-containers.json`;
 the database matrix writes `.cache/database-checks.json`.
+Keep build and dependency caches between normal runs. Use `make clean-cache` only
+occasionally when caches need repair or have grown excessively, or when requested.
 Cleanup commands preserve `.tools`, `.env`, and application data.
 
 `make check-vuln`, `make check`, and binary builds require network access to the Go
@@ -147,9 +150,9 @@ Use `docker logs piped` for output and `docker stop piped` to stop.
 ## Internal development integrations
 
 With explicit development enablement and loopback URLs, `piped-dev` exposes the
-scoped bearer-key API at `/api/v1`, MCP at `/mcp`, and session-based WebMCP in supported
-browsers. Discover tools before using them. These integrations are excluded from
-production; use the existing local development database, never production data.
+internal scoped bearer-key API at `/api/development/v1`, MCP at `/mcp`, and
+session-based WebMCP in supported browsers. Discover tools before using them. These
+internal integrations are excluded from production; use the existing local development database, never production data.
 
 Issue only needed scopes with `piped-dev api-key --username NAME --ttl 1h --json`.
 Capture its token privately in the calling process, send it only as a bearer header,
@@ -158,3 +161,9 @@ and revoke the returned ID in a cleanup/finally block with
 the development interfaces, rather than editing SQLite directly.
 See [AGENTS.md](AGENTS.md) for access rules and [REQUIREMENTS.md](REQUIREMENTS.md) for scope
 and dependency approvals.
+
+The production API remains at `/api/v1` in both builds. It accepts only personal keys
+created on the API Keys page. Internal CLI keys work only with `/api/development/v1`
+and `/mcp` when development integrations are enabled; neither key type can access the
+other API. Development fixture cleanup (`DELETE /api/development/v1/runs/{run}`) is
+unavailable in production. See [API.md](API.md) for the production API contract.

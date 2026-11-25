@@ -2,11 +2,8 @@ package store
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
-	"fmt"
-	"os"
-	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -47,7 +44,7 @@ func TestFailedMigrationPreservesTransactionalOrPendingHistory(t *testing.T) {
 	if err := db.db.QueryRowContext(ctx, "SELECT MAX(version) FROM schema_migrations").Scan(&latest); err != nil {
 		t.Fatal(err)
 	}
-	// Leave the final table in place but remove its history record so its DDL
+	// Leave the final schema in place but remove its history record so its DDL
 	// fails. Only nontransactional MySQL/MariaDB DDL may leave a pending marker.
 	if _, err := db.db.ExecContext(ctx, "DELETE FROM schema_migrations WHERE version = ?", latest); err != nil {
 		t.Fatal(err)
@@ -68,64 +65,21 @@ func TestFailedMigrationPreservesTransactionalOrPendingHistory(t *testing.T) {
 	}
 }
 
-func TestSQLiteUpgradesPreserveExistingAccountsAndSessions(t *testing.T) {
-	for _, applied := range []int{2, 5, 9, 12} {
-		t.Run(fmt.Sprintf("from-version-%d", applied), func(t *testing.T) {
-			ctx := context.Background()
-			directory := filepath.Join(t.TempDir(), "data")
-			if err := os.Mkdir(directory, 0700); err != nil {
-				t.Fatal(err)
-			}
-			filename := filepath.Join(directory, "piped.db")
-			raw, err := sql.Open("sqlite", filename)
+func TestMigrationFilesDefineOneTableEach(t *testing.T) {
+	for _, dialect := range []string{"sqlite", "postgres", "mysql"} {
+		entries, err := migrations.ReadDir("migrations/" + dialect)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, entry := range entries {
+			body, err := migrations.ReadFile("migrations/" + dialect + "/" + entry.Name())
 			if err != nil {
 				t.Fatal(err)
 			}
-			t.Cleanup(func() { raw.Close() })
-			if _, err := raw.ExecContext(ctx, "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, checksum TEXT NOT NULL)"); err != nil {
-				t.Fatal(err)
+			text := string(body)
+			if strings.Count(text, "CREATE TABLE ") != 1 || strings.Contains(text, "ALTER TABLE ") || strings.Contains(text, "DROP TABLE ") {
+				t.Errorf("%s/%s must define one final table without incremental DDL", dialect, entry.Name())
 			}
-			entries, err := migrations.ReadDir("migrations/sqlite")
-			if err != nil {
-				t.Fatal(err)
-			}
-			for index, entry := range entries[:applied] {
-				body, err := migrations.ReadFile("migrations/sqlite/" + entry.Name())
-				if err != nil {
-					t.Fatal(err)
-				}
-				if _, err := raw.ExecContext(ctx, string(body)); err != nil {
-					t.Fatal(err)
-				}
-				if _, err := raw.ExecContext(ctx, "INSERT INTO schema_migrations(version, checksum) VALUES (?, ?)", index+1, fmt.Sprintf("%x", sha256.Sum256(body))); err != nil {
-					t.Fatal(err)
-				}
-			}
-			legacy := &Store{db: &database{DB: raw, dialect: "sqlite"}}
-			user, err := legacy.InitAdmin(ctx, "admin", "existing-password-hash")
-			if err != nil {
-				t.Fatal(err)
-			}
-			actor := actorFor(t, legacy, user, "existing-session")
-			if err := raw.Close(); err != nil {
-				t.Fatal(err)
-			}
-			upgraded, err := Open(ctx, filename)
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() { upgraded.Close() })
-			resolved, err := upgraded.Session(ctx, actor.SessionHash, user.CreatedAt)
-			if err != nil || resolved.User != user {
-				t.Fatalf("upgrade lost the account, hash, or session: %v", err)
-			}
-			var count int
-			if err := upgraded.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM schema_migrations").Scan(&count); err != nil || count != len(entries) {
-				t.Fatalf("upgrade did not apply the remaining migrations: %v", err)
-			}
-			if err := upgraded.migrate(ctx); err != nil {
-				t.Fatalf("upgraded database failed a repeat migration check: %v", err)
-			}
-		})
+		}
 	}
 }

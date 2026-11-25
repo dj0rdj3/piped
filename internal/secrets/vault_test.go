@@ -63,25 +63,25 @@ func TestEnvGenerationAndLoading(t *testing.T) {
 	if info.Mode().Perm() != 0600 {
 		t.Fatal("key file is not private")
 	}
-	v, err := LoadEnv(path)
+	v, err := LoadConfiguration(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := GenerateEnv(path); err == nil {
 		t.Fatal("overwrote existing key")
 	}
-	v2, err := LoadEnv(path)
+	v2, err := LoadConfiguration(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := v2.Open("test", v.Seal("test", []byte("saved"))); err != nil {
+	if _, err := v2.Vault.Open("test", v.Vault.Seal("test", []byte("saved"))); err != nil {
 		t.Fatal("key changed")
 	}
 	link := filepath.Join(filepath.Dir(path), "link")
 	if err := os.Symlink(path, link); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := LoadEnv(link); err == nil {
+	if _, err := LoadConfiguration(link); err == nil {
 		t.Fatal("accepted symlink")
 	}
 	if err := GenerateEnv(link); err == nil {
@@ -90,13 +90,13 @@ func TestEnvGenerationAndLoading(t *testing.T) {
 	if err := os.Chmod(path, 0644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := LoadEnv(path); err == nil {
+	if _, err := LoadConfiguration(path); err == nil {
 		t.Fatal("accepted readable key file")
 	}
-	if _, err := LoadEnv(filepath.Dir(path)); err == nil {
+	if _, err := LoadConfiguration(filepath.Dir(path)); err == nil {
 		t.Fatal("accepted directory")
 	}
-	if _, err := LoadEnv(path + "missing"); err == nil {
+	if _, err := LoadConfiguration(path + "missing"); err == nil {
 		t.Fatal("accepted missing key")
 	}
 }
@@ -108,7 +108,7 @@ func TestEnvFormatAndSanitizedErrors(t *testing.T) {
 		if err := os.WriteFile(path, []byte(body), 0600); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := LoadEnv(path); err != nil {
+		if _, err := LoadConfiguration(path); err != nil {
 			t.Fatalf("valid format rejected: %v", err)
 		}
 	}
@@ -117,7 +117,7 @@ func TestEnvFormatAndSanitizedErrors(t *testing.T) {
 		if err := os.WriteFile(path, []byte(body), 0600); err != nil {
 			t.Fatal(err)
 		}
-		_, err := LoadEnv(path)
+		_, err := LoadConfiguration(path)
 		if err == nil {
 			t.Fatal("invalid env accepted")
 		}

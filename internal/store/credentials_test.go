@@ -125,7 +125,7 @@ func TestConcurrentCredentialNames(t *testing.T) {
 }
 
 func TestMissingVaultVerificationRejectsEverySecretTable(t *testing.T) {
-	for _, kind := range []string{"empty", "credential", "host", "job secret"} {
+	for _, kind := range []string{"empty", "credential", "host", "job secret", "notification secret"} {
 		t.Run(kind, func(t *testing.T) {
 			db := openTest(t)
 			ctx := context.Background()
@@ -141,6 +141,12 @@ func TestMissingVaultVerificationRejectsEverySecretTable(t *testing.T) {
 				_, err = db.SaveHost(ctx, actor, Host{ID: "host", Name: "Host", Address: "localhost", Port: 22, Username: "deploy", Tags: []string{}}, []byte("encrypted password"), nil, true)
 			case "job secret":
 				_, err = db.SaveJob(ctx, actor, Job{ID: "job", Name: "Job", Script: "echo fixture", ExecutionMode: "sequential"}, []JobSecret{{Name: "TOKEN", Ciphertext: []byte("encrypted token")}}, true)
+			case "notification secret":
+				_, err = db.SaveNotificationTarget(ctx, actor, NotificationTarget{
+					ID: "target", Type: "webhook", Name: "Webhook", Method: "POST", ContentType: "text/plain",
+					Endpoint: &NotificationEndpoint{URL: "https://example.internal"},
+					Secrets:  []NotificationSecret{{Name: "token", Ciphertext: []byte("encrypted token")}},
+				}, true, nil)
 			}
 			if err != nil {
 				t.Fatal(err)

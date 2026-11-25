@@ -255,10 +255,11 @@ func foreignKeyViolation(err error) bool {
 	var sqliteErr *sqlite.Error
 	var mysqlErr *mysql.MySQLError
 	var postgresErr *pgconn.PgError
+	// PostgreSQL RESTRICT reports restrict_violation (23001) on newer servers.
 	// SQLite reports immediate ON DELETE RESTRICT failures as trigger errors.
 	// Match their diagnostic as well so unrelated trigger failures stay errors.
 	return (errors.As(err, &sqliteErr) && (sqliteErr.Code() == sqlite3.SQLITE_CONSTRAINT_FOREIGNKEY ||
 		(sqliteErr.Code() == sqlite3.SQLITE_CONSTRAINT_TRIGGER && strings.Contains(sqliteErr.Error(), "FOREIGN KEY constraint failed")))) ||
 		(errors.As(err, &mysqlErr) && (mysqlErr.Number == 1451 || mysqlErr.Number == 1452)) ||
-		(errors.As(err, &postgresErr) && postgresErr.Code == "23503")
+		(errors.As(err, &postgresErr) && (postgresErr.Code == "23503" || postgresErr.Code == "23001"))
 }

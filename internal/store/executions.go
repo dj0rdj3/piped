@@ -17,6 +17,7 @@ const (
 
 // Connection contains ciphertext for internal workers only. It is never serialized.
 type Connection struct {
+	Notifications                      []NotificationTarget
 	JobID                              string
 	JobSecrets                         []JobSecret
 	Environment                        []secrets.Variable
@@ -107,7 +108,12 @@ func snapshotRun(ctx context.Context, tx *transaction, id string, job Job, trigg
 	if err != nil {
 		return Run{}, nil, err
 	}
+	notifications, err := notificationSnapshot(ctx, tx, job.ID)
+	if err != nil {
+		return Run{}, nil, err
+	}
 	for index := range connections {
+		connections[index].Notifications = notifications
 		connections[index].JobID = job.ID
 		connections[index].JobSecrets = environment
 	}

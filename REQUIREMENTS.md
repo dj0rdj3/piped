@@ -219,12 +219,12 @@ workflow. Simplicity and convenience must not compromise security or correctness
 ## Future extensibility and exclusions
 
 - Docker image delivery is authorized in R68, superseding the earlier binary-only phase.
-- Webhooks remain deferred. The user subsequently authorized a development-only external
-  API, MCP, and WebMCP integration (R23), with production access prohibited (R24).
+- R120 authorizes webhook notifications. R113 authorizes a separate production API for users; internal
+  development API, MCP, and WebMCP integrations remain prohibited in production.
 - The API deferral concerns an external integration API, not the communication needed between
   the Vue frontend and Go backend.
 - Retain SQLite while supporting PostgreSQL, MariaDB, and MySQL (R64).
-- Notifications and file transfer are not initial requirements.
+- Webhook notifications are authorized in R120. File transfer remains outside scope.
 - Interactive intervention within a job is required. A standalone general-purpose SSH terminal
   outside a job has not been requested.
 - Do not introduce unrelated features merely to match Rundeck, Termix, or Semaphore UI.
@@ -373,8 +373,9 @@ These are implementation choices, not additional user requirements:
 - Require same-origin API mutations with a custom request header and current-password
   confirmation for account changes. Prevent self-deletion and removal of the last administrator.
 - Production binaries omit the MCP/development HTTP implementations and reject development
-  flags and key-issuance commands. No build exposes an API-key GUI or browser key-management
-  routes. Production frontend assets also omit WebMCP modules. Every build defaults to
+  flags and internal key-issuance commands. R113 adds a separate production API and personal
+  API Keys page; internal keys remain CLI-only. Production frontend assets also omit
+  WebMCP modules. Every build defaults to
   `data/piped.db` and `.env`, preserving existing local accounts across build profiles.
   Automated tests use temporary databases.
   Development integrations require explicit `--development` and accept only loopback
@@ -1039,3 +1040,224 @@ Keep both documents accurate when their setup or workflow instructions change.
 
 R112 (2026-11-25): Remove shared-use and team-oriented wording from the README;
 these do not need specific emphasis in the description or features.
+
+R113 (2026-11-25): Provide a production API that users can use and an API Keys page
+where signed-in users create and revoke their own personal keys. Keep the development
+API separate and always exclude its transports, MCP, WebMCP, fixture cleanup, and
+internal CLI key issuance from production. This supersedes the previous external-API
+deferral and prohibition on a user-facing key page, only for production personal keys.
+Internal development key management remains CLI-only and hidden from the GUI.
+
+Implementation: Production bearer routes use `/api/v1`; development bearer routes use
+`/api/development/v1` only with the development build, explicit enablement, and loopback
+URLs. Each accepts only its own token namespace and persisted key purpose. Keep shared
+resource handlers, validation, transactional authorization, scopes, and secret protection.
+Personal key management uses same-origin browser sessions and current-password
+confirmation, restricts listing/revocation to the owner, and cannot be performed using
+bearer keys. Personal keys contain 256 random bits, persist only SHA-256 digests, expose
+the raw token only at creation, require explicit scopes and expiry (1 hour to 90 days;
+page default 30 days), and are revoked on password changes/account deletion. Preserve
+existing keys as development keys through additive driver-specific migrations. No new
+application dependencies or settings are required. Document the API and verify both
+profiles, purpose isolation, revocation/expiry/scopes, browser interactions, and
+production artifact exclusion of internal tooling.
+
+
+R114 (2026-11-25): Allow personal production API keys without expiration. Show exactly
+these expiry presets: 1h, 1d, 7d, 30d, 90d, and No expiration (the requested label for
+forever keys). Retain the 30d default. An explicit zero expires_in_hours selects no
+expiration; omitted/null values remain invalid. Store non-expiring production keys
+with SQL NULL expiry and expose expires_at as zero metadata. Preserve existing keys,
+finite expiry boundaries, revocation, password/account invalidation, scopes, and
+production/development isolation. Internal development keys must still expire, and
+internal tooling continues using short-lived keys. No new dependencies or settings.
+
+
+R115 (2026-11-25): Remove the explanation above the API Keys table and make its table
+header uniform with the established pages, including the count, refresh/search controls,
+column typography, padding, and borders. Keep table presentation and states consistent.
+UI uniformity is a standing default: use existing page, table, form, and dialog patterns,
+avoid redundant explanatory copy, and introduce variations only when the task needs them.
+
+The Vite development proxy matches `/api/` requests so `/api-keys` remains a frontend
+page route on direct entry.
+
+
+R116 (2026-11-25): Match API key revocation to the other pages' destructive row
+actions: use the shared icon button's danger styling, the standard right-aligned action
+container, the existing 17px trash icon, and a concise Revoke tooltip. Preserve the
+accessible key-specific label and existing revocation confirmation/password flow.
+
+
+R117 (2026-11-25): Review and align the entire API Keys page and its creation,
+one-time display, and revocation dialogs with existing UI patterns. Include the
+backend in the cleanup and simplify only where readability improves. Preserve all
+functionality, password confirmation, owner-only management, explicit scopes and
+expiry choices, one-time token handling, unsaved-change guards, stale-response
+protection, transactional authorization, and production/development separation.
+
+
+R118 (2026-11-25): Apply a focused consistency and simplification pass to the remaining
+pages, dialogs, and their backend paths. Keep the review brief in light of the recent
+deep reviews. Fix clear UI inconsistencies and small readability/lifecycle issues;
+preserve security, functionality, existing data/configuration/dependencies, and
+production exclusion of all internal development tooling. Use focused verification
+for changed paths rather than repeating the full database/distribution matrices.
+
+
+R119 (2026-11-25): Do not clean caches on every run or at the end of every task.
+Preserve build and dependency caches for reuse; clean them only occasionally when
+needed (stale/corrupt/excessively large caches) or explicitly requested. Continue
+removing temporary verification files and test records after use. This supersedes
+any interpretation of R67 as routine per-task cache clearing.
+
+
+R120 (2026-11-25): Add notifications, starting with reusable webhook targets inspired
+by Proxmox. Configure URL, POST/PUT/GET method, headers, body format/template, enabled
+state, and an "On by default for new jobs" flag on each target. Each job selects its
+notification targets; enabled default targets are preselected for new jobs, while edits
+preserve selections and duplicates copy source selections. Existing jobs do not gain
+new targets automatically. Select up to 64 targets per job; this limit also applies
+to server-selected defaults and copies. An explicit empty selection disables notifications.
+
+Templates support $host (remote host name), $job (job name), $status (per-host terminal
+status), $output, and $output:10 (last ten lines, with counts 1-1000); $$ emits a literal
+dollar. Notify once for each host completion, including success, failure, interruption,
+and cancellation, for manual and scheduled runs. JSON variables belong inside strings
+and are escaped automatically; plain-text bodies substitute literally. Only persisted,
+secret-masked output is sent; output is bounded to the latest 256 KiB and rendered
+bodies to 1 MiB. Body templates are limited to 64 KiB. GET requires an empty plain-text
+body. No new libraries or environment settings are introduced.
+
+Encrypt URL and header settings with record-bound vault encryption and keep them
+write-only. Omission on edit preserves both; replacement supplies the complete URL
+and header map. Validate HTTP(S), headers, templates, and versions. Allow internal
+homelab destinations, verify HTTPS certificates, disable redirects and ambient proxy
+settings, limit request duration to ten seconds and concurrent delivery to four.
+Run admission snapshots selected enabled target configurations; subsequent edits
+cannot change that run. Delivery happens asynchronously after persisted host completion
+and does not alter execution outcomes. Log sanitized delivery failures; no retries,
+durable delivery queue, restart replay, or notification history are included. Shutdown
+cancels outbound requests and joins workers.
+
+Expose target CRUD through browser routes, production/development APIs, and internal
+MCP with separate notifications:read/write scopes. Internal WebMCP supports metadata
+reads. Preserve production exclusion of all internal integrations and key issuance.
+
+
+R121 (2026-11-25): Make Notifications' Add target action a dropdown with Webhook
+as the currently available option. Leave room for future notification types. Keep
+the creation form specific to its selected type and show target type in the list.
+Persist an immutable type discriminator, defaulting existing targets and omitted
+API creation types to webhook. Reject unsupported types rather than treating them
+as webhooks. Keep existing webhook configuration, encryption, job defaults, and
+delivery behavior. No new dependencies or environment settings are needed.
+
+
+R122 (2026-11-25): Remove the Webhook connection heading and its encryption helper.
+Make webhook URL and headers readable, editable, and unencrypted. This supersedes
+R120's encryption/write-only requirement for these two configuration fields. Add
+named notification secrets whose values remain encrypted and write-only, with
+$secret referencing a secret named secret in the body, URL path/query, or header
+values. Preserve $host/$job/$status/$output body variables and $$ literal dollars.
+Keep the destination origin and header names literal. Escape substituted secrets
+for their URL component and validate rendered headers to prevent injection.
+
+Use the existing vault with secret values bound to target ID and name. Reads expose
+URL/header templates and secret_names, never secret values or expanded templates.
+Support up to 16 secrets with case-sensitive ASCII identifier names (1-64 characters,
+starting with a letter/underscore) and UTF-8 values of 1-4096 bytes without NUL.
+Reserve host/job/status/output. Omitted secrets preserve the list; supplied arrays
+replace it, missing values preserve existing names, and [] removes everything.
+Undefined references or invalid rendered settings reject the entire transaction.
+Snapshot secret ciphertext with run notification definitions. Migrate existing
+encrypted endpoints atomically at vault-backed service startup, store their URL and
+headers as readable templates, clear old ciphertext, and escape existing dollar
+literals so delivery stays the same. Keep scopes, authorization/version checks,
+redirect/TLS protections, sanitized logging, and production isolation. Reuse the
+named-secret editor for job and webhook forms without changing job behavior.
+No new dependencies or environment settings are introduced.
+
+
+R123 (2026-11-25): Make notification template names and secret names fully
+case-insensitive: built-ins, $output:N, body/URL/header secret lookup, reserved-name
+checks, duplicate checks, and preservation/replacement on edit. Preserve literal
+text, secret values, and existing encrypted name bindings. Keep stored spelling
+when preserving ciphertext using a differently cased name. Reject existing names
+that become ambiguous or collide with built-ins before delivery; let users resolve
+them explicitly without choosing or dropping values automatically. This supersedes
+R122's case-sensitive notification names. SSH job environment variable rules remain
+unchanged. No new dependencies, schema changes, or environment settings are needed.
+
+
+R124 (2026-11-25): Clean up and simplify frontend and backend code where useful
+without sacrificing security or functionality. Consolidate duplicated webhook
+rendering and endpoint validation, clarify transactional secret preservation,
+and simplify notification form state. Preserve authorization, atomic versioned
+writes, encrypted name bindings, case-insensitive templates, validation limits,
+startup conversion, delivery protections, and form lifecycle/dirty-state behavior.
+No new dependencies, schema changes, environment settings, or user-visible
+configuration changes are needed.
+
+
+R125 (2026-11-25): Review notification frontend/backend behavior and security and
+fix discovered issues. Validate JSON body templates before expansion so variables
+cannot alter JSON structure or complete escape sequences. Enforce the rendered
+body limit over substitutions and literal text, including trailing text. Reject
+unsafe/oversized delivery before making an outbound request. Reject explicit URL
+ports outside 1-65535 rather than saving unusable destinations. Preserve existing
+notification security and behavior; use regression tests and live interface checks.
+
+
+R126 (2026-11-25): Squash migrations to one file per application table for SQLite,
+PostgreSQL, and MariaDB/MySQL, with final columns, defaults, constraints, and indexes
+defined at creation. Remove incremental DDL and obsolete incremental upgrade tests.
+Preserve the existing local database: recognize only the complete, exact checksummed
+pre-squash schema and adopt the new baseline history atomically without application
+data changes. Partial older histories must finish upgrading with the previous
+binary; corrupt, pending, unknown, and incomplete histories remain rejected. Keep
+driver-specific locking, transactional/pending-DDL safety, and CGO-free builds.
+No dependencies or environment settings are added.
+
+
+R127 (2026-11-25): As a standing rule, keep README additions extremely short,
+limited to actual user-facing features. Do not describe migration organization as
+a feature and do not add or relocate lengthy explanations to README.md or DEV.md.
+This supersedes standing README update rules when they would require lengthy
+explanations. No README/DEV entry is needed for this migration squash.
+
+
+R128 (2026-11-25): Remove old migration compatibility rather than preserving
+pre-squash development databases. Delete baseline-adoption code and fixtures,
+legacy encrypted-webhook endpoint conversion, and its obsolete storage column.
+Retain one file per table, normal checksum/sequence validation, pending-DDL safety,
+and current notification behavior/security. Reset the local development database
+when needed; keep .env byte-for-byte unchanged. This supersedes R126's baseline
+adoption and R122/R124's legacy conversion requirements. No README/DEV additions.
+
+
+R129 (2026-11-25): Remove compatibility arising from earlier development versions
+project-wide, while retaining compatibility serving current functional purposes
+(supported databases, protocols, SSH key formats, sudo behavior, configuration
+options/defaults, and security validation). Remove the obsolete navigator WebMCP
+adapter and unregister fallback, the superseded vault-only configuration helper,
+and implicit notification-type backfilling for old clients. Notification writes
+now require an explicit supported type. Retain normal optional update semantics.
+Keep .env unchanged and reset the local development database for the clean schema.
+
+
+R130 (2026-11-25): Review compatibility-removal changes and fix regressions without
+restoring development-version adapters. Include notification secrets in missing
+vault-verification checks so startup cannot silently initialize a new verifier
+when they are the only encrypted data. Ignore late authorization failures from
+stopped/cancelled WebMCP calls, and prevent session checks for an earlier account
+from signing out a newly authenticated account. Retain current authorization,
+registration cleanup, settings, and strict migration checks. Preserve .env and
+local records; use isolated fixtures for corruption/race regression tests.
+
+
+R131 (2026-11-25): Make a quick (at most 2-3 minutes) cleanup pass over recent
+frontend/backend changes, preserving security and functionality. Use the WebMCP
+registration abort signal as its single lifecycle state, simplify iteration over
+pending migrations, and keep vault-secret checks readable. Use focused checks;
+no configuration, schema, dependency, or user-data changes.

@@ -35,7 +35,12 @@ func (s *Store) VerifyVault(ctx context.Context, v *secrets.Vault) error {
 	err = tx.QueryRowContext(ctx, "SELECT verification FROM encryption_settings WHERE id = 1").Scan(&encrypted)
 	if errors.Is(err, sql.ErrNoRows) {
 		var populated bool
-		if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM credentials) OR EXISTS(SELECT 1 FROM hosts) OR EXISTS(SELECT 1 FROM job_secrets)").Scan(&populated); err != nil {
+		if err := tx.QueryRowContext(ctx, `
+			SELECT EXISTS(SELECT 1 FROM credentials)
+			    OR EXISTS(SELECT 1 FROM hosts)
+			    OR EXISTS(SELECT 1 FROM job_secrets)
+			    OR EXISTS(SELECT 1 FROM notification_secrets)
+		`).Scan(&populated); err != nil {
 			return err
 		}
 		if populated {

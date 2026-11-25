@@ -40,7 +40,7 @@ func WriteError(w http.ResponseWriter, err error, logger *slog.Logger) {
 	case errors.Is(err, store.ErrForbidden):
 		public = &Error{403, "API key does not permit this operation"}
 	case errors.Is(err, auth.ErrAPIKeyInput):
-		public = &Error{400, "use a name, valid scopes, and an expiry between 1 hour and 90 days"}
+		public = &Error{400, "use a name, valid scopes, and a supported expiry"}
 	case errors.Is(err, store.ErrLastUser):
 		public = &Error{409, "the last administrator cannot be removed"}
 	default:

@@ -25,9 +25,10 @@ func (s *Store) beginAuthorized(ctx context.Context, actor Actor, scope string) 
 // Actor binds privileged changes to the session and password checked by the caller.
 type Actor struct {
 	User
-	SessionHash string   `json:"-"`
-	APIKeyHash  string   `json:"-"`
-	Scopes      []string `json:"-"`
+	SessionHash   string   `json:"-"`
+	APIKeyPurpose string   `json:"-"`
+	APIKeyHash    string   `json:"-"`
+	Scopes        []string `json:"-"`
 }
 
 func authorize(ctx context.Context, tx *transaction, actor Actor, scope string) error {
@@ -35,7 +36,7 @@ func authorize(ctx context.Context, tx *transaction, actor Actor, scope string) 
 		var scopes string
 		err := tx.QueryRowContext(ctx, `
 			SELECT k.scopes FROM api_keys k JOIN users u ON u.id = k.user_id
-			WHERE k.token_hash = ? AND u.id = ? AND u.password_hash = ? AND k.expires_at > ?
+			WHERE k.token_hash = ? AND u.id = ? AND u.password_hash = ? AND (k.expires_at IS NULL OR k.expires_at > ?)
 		`, actor.APIKeyHash, actor.ID, actor.PasswordHash, time.Now().Unix()).Scan(&scopes)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrUnauthorized

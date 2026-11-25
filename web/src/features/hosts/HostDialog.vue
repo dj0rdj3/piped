@@ -1,6 +1,6 @@
 <script setup>
 import { computed, onUnmounted, ref, watch } from 'vue';
-import { LoaderCircle, Server } from '@lucide/vue';
+import { LoaderCircle, Server, Trash2 } from '@lucide/vue';
 import AppButton from '../../components/ui/AppButton.vue';
 import AppDialog from '../../components/ui/AppDialog.vue';
 import FormInput from '../../components/ui/FormInput.vue';
@@ -135,17 +135,26 @@ async function submit() {
     :title="title"
     title-id="host-dialog-title"
     :busy="busy"
-    wide
+    :wide="mode !== 'delete'"
     @close="emit('close')"
   >
-    <template #icon><Server :size="21" /></template>
+    <template #icon>
+      <Trash2
+        v-if="mode === 'delete'"
+        :size="21"
+      />
+      <Server
+        v-else
+        :size="21"
+      />
+    </template>
     <form @submit.prevent="submit">
       <p
         v-if="mode === 'delete'"
-        class="my-4 text-sm text-muted"
+        class="text-sm leading-relaxed text-muted"
       >
         Permanently remove
-        <strong>{{ target.name }}</strong>
+        <strong class="[overflow-wrap:anywhere]">{{ target.name }}</strong>
         and its stored passwords?
       </p>
       <fieldset
@@ -416,15 +425,9 @@ async function submit() {
             class="motion-safe:animate-spin"
             :size="17"
           />
-          {{
-            busy
-              ? 'Saving...'
-              : mode === 'delete'
-                ? 'Remove host'
-                : mode === 'create'
-                  ? 'Add host'
-                  : 'Save changes'
-          }}
+          <template v-if="busy">Saving&hellip;</template>
+          <template v-else-if="mode === 'delete'">Remove host</template>
+          <template v-else>{{ mode === 'create' ? 'Add host' : 'Save changes' }}</template>
         </AppButton>
       </div>
     </form>

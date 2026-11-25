@@ -91,6 +91,7 @@ func (s *Service) Create(ctx context.Context, actor store.Actor, input CreateInp
 	}
 	var raw any
 	var private []byte
+	defer func() { clear(private) }()
 	if input.Mode == "generate" {
 		_, key, err := ed25519.GenerateKey(rand.Reader)
 		if err != nil {
@@ -106,7 +107,6 @@ func (s *Service) Create(ctx context.Context, actor store.Actor, input CreateInp
 		private = pem.EncodeToMemory(block)
 	} else {
 		private = []byte(input.PrivateKey)
-		defer clear(private)
 		if err := checkPEM(private); err != nil {
 			return store.Credential{}, err
 		}
@@ -126,7 +126,6 @@ func (s *Service) Create(ctx context.Context, actor store.Actor, input CreateInp
 			return store.Credential{}, invalid("invalid or unsupported private key, or incorrect passphrase")
 		}
 	}
-	defer clear(private)
 	if err := validateKey(raw); err != nil {
 		return store.Credential{}, err
 	}

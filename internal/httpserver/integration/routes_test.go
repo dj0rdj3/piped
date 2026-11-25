@@ -13,7 +13,7 @@ import (
 
 func TestWorkspaceDirectEntryRoutes(t *testing.T) {
 	h := newHarness(t, false)
-	for _, path := range []string{"/", "/login", "/login/", "/login?next=%2Fcredentials", "/users", "/users/", "/credentials", "/credentials/", "/hosts", "/hosts/", "/hosts?from=bookmark", "/jobs", "/jobs/", "/jobs?from=bookmark", "/users?from=bookmark", "/credentials?from=bookmark"} {
+	for _, path := range []string{"/api-keys", "/api-keys/", "/", "/login", "/login/", "/login?next=%2Fcredentials", "/users", "/users/", "/credentials", "/credentials/", "/hosts", "/hosts/", "/hosts?from=bookmark", "/jobs", "/jobs/", "/jobs?from=bookmark", "/users?from=bookmark", "/credentials?from=bookmark"} {
 		for _, method := range []string{"GET", "HEAD"} {
 			r := httptest.NewRequest(method, path, nil)
 			w := httptest.NewRecorder()
@@ -117,7 +117,7 @@ func TestAbsentOptionalServicesDoNotRegisterRoutes(t *testing.T) {
 	h.handler = minimal
 	cookie := h.login(t, "admin", testPassword)
 	expect(t, h.request("GET", "/api/users", nil, cookie), 200)
-	for _, path := range []string{"/api/credentials", "/api/hosts", "/api/jobs", "/api/jobs/schedule-preview", "/api/jobs/missing/run", "/api/runs/missing", "/api/runs/missing/hosts/missing/terminal", "/api/v1/users", "/mcp"} {
+	for _, path := range []string{"/api/credentials", "/api/hosts", "/api/jobs", "/api/jobs/schedule-preview", "/api/jobs/missing/run", "/api/runs/missing", "/api/runs/missing/hosts/missing/terminal", "/mcp"} {
 		for _, method := range []string{"GET", "POST", "DELETE"} {
 			w := h.request(method, path, nil, cookie)
 			if w.Code != 404 && w.Code != 405 {

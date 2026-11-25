@@ -17,7 +17,7 @@ func TestExecutionDevelopmentScopesAndToolDiscovery(t *testing.T) {
 	if strings.Contains(string(encoded), `"run_job"`) {
 		t.Fatal("definition-author key received execution capability")
 	}
-	expect(t, h.bearerRequest("POST", "/api/v1/jobs/missing/run", authorToken, map[string]int{"version": 1}, nil), 403)
+	expect(t, h.bearerRequest("POST", "/api/development/v1/jobs/missing/run", authorToken, map[string]int{"version": 1}, nil), 403)
 	_, readToken := h.issueKey(t, store.ScopeRunsRead)
 	encoded, _ = json.Marshal(h.mcpRequest(t, readToken, "tools/list", map[string]any{}))
 	for _, name := range []string{"list_runs", "get_run", "read_run_output"} {
@@ -28,7 +28,7 @@ func TestExecutionDevelopmentScopesAndToolDiscovery(t *testing.T) {
 	if strings.Contains(string(encoded), `"run_job"`) {
 		t.Fatal("read key received execution mutation")
 	}
-	expect(t, h.bearerRequest("POST", "/api/v1/runs/missing/hosts/missing/input", readToken, map[string]string{"data": "danger"}, nil), 403)
+	expect(t, h.bearerRequest("POST", "/api/development/v1/runs/missing/hosts/missing/input", readToken, map[string]string{"data": "danger"}, nil), 403)
 	_, writeToken := h.issueKey(t, store.ScopeRunsWrite)
 	encoded, _ = json.Marshal(h.mcpRequest(t, writeToken, "tools/list", map[string]any{}))
 	for _, name := range []string{"run_job", "cancel_run_host", "send_run_input", "approve_run_host_key"} {
@@ -36,8 +36,8 @@ func TestExecutionDevelopmentScopesAndToolDiscovery(t *testing.T) {
 			t.Fatalf("missing write tool %s", name)
 		}
 	}
-	expect(t, h.bearerRequest("GET", "/api/v1/runs/missing", writeToken, nil, nil), 403)
-	expect(t, h.bearerRequest("POST", "/api/v1/jobs/missing/run", writeToken, map[string]int{"version": 1}, nil), 404)
-	expect(t, h.bearerRequest("GET", "/api/v1/runs/missing", readToken, nil, nil), 404)
-	expect(t, h.bearerRequest("DELETE", "/api/v1/runs/missing", readToken, nil, nil), 403)
+	expect(t, h.bearerRequest("GET", "/api/development/v1/runs/missing", writeToken, nil, nil), 403)
+	expect(t, h.bearerRequest("POST", "/api/development/v1/jobs/missing/run", writeToken, map[string]int{"version": 1}, nil), 404)
+	expect(t, h.bearerRequest("GET", "/api/development/v1/runs/missing", readToken, nil, nil), 404)
+	expect(t, h.bearerRequest("DELETE", "/api/development/v1/runs/missing", readToken, nil, nil), 403)
 }

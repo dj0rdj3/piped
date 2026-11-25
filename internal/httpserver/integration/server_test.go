@@ -22,6 +22,7 @@ import (
 	"piped/internal/hosts"
 	"piped/internal/httpserver"
 	"piped/internal/jobs"
+	"piped/internal/notifications"
 	"piped/internal/secrets"
 	"piped/internal/store"
 	"piped/internal/testdatabase"
@@ -72,6 +73,10 @@ func newHarness(t *testing.T, secure bool, development ...bool) *harness {
 	if err != nil {
 		t.Fatal(err)
 	}
+	notificationService, err := notifications.New(context.Background(), s, vault)
+	if err != nil {
+		t.Fatal(err)
+	}
 	engine, err := execution.New(context.Background(), s, vault, slog.New(slog.NewTextHandler(io.Discard, nil)), 7)
 	if err != nil {
 		t.Fatal(err)
@@ -85,12 +90,13 @@ func newHarness(t *testing.T, secure bool, development ...bool) *harness {
 			"index.html":    {Data: []byte("piped frontend")},
 			"assets/app.js": {Data: []byte("console.log('piped')")},
 		},
-		Logger:      slog.New(slog.NewTextHandler(io.Discard, nil)),
-		Credentials: credentialService,
-		Hosts:       hostService,
-		Jobs:        jobService,
-		Executions:  engine,
-		Development: len(development) > 0 && development[0],
+		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Credentials:   credentialService,
+		Hosts:         hostService,
+		Jobs:          jobService,
+		Notifications: notificationService,
+		Executions:    engine,
+		Development:   len(development) > 0 && development[0],
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -1,7 +1,9 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import {
+  Bell,
   KeyRound,
+  KeySquare,
   ListChecks,
   LoaderCircle,
   LogOut,
@@ -12,6 +14,8 @@ import {
   Users,
 } from '@lucide/vue';
 import LoginForm from './features/auth/LoginForm.vue';
+import NotificationsPage from './features/notifications/NotificationsPage.vue';
+import APIKeysPage from './features/api-keys/APIKeysPage.vue';
 import UsersPage from './features/users/UsersPage.vue';
 import CredentialsPage from './features/credentials/CredentialsPage.vue';
 import HostsPage from './features/hosts/HostsPage.vue';
@@ -43,9 +47,11 @@ const hostAction = ref(null);
 const jobAction = ref(null);
 const page = ref(routeForPath(window.location.pathname));
 const pageTitles = {
+  notifications: 'Notifications',
   hosts: 'Hosts',
   jobs: 'Jobs',
   users: 'Users',
+  'api-keys': 'API Keys',
   credentials: 'Credentials',
   login: 'Sign in',
 };
@@ -117,10 +123,14 @@ async function logout() {
 }
 
 async function checkSession() {
+  const account = user.value;
+  if (!account) {
+    return;
+  }
   try {
     await api('/auth/me');
   } catch (err) {
-    if (err.status === 401) {
+    if (err.status === 401 && user.value === account) {
       signedOut('Session expired. Sign in again.');
     }
   }
@@ -167,7 +177,7 @@ if (developmentBuild) {
       if (stopped) {
         return;
       }
-      const stop = await registerWebMCP(document.modelContext ?? navigator.modelContext, {
+      const stop = await registerWebMCP(document.modelContext, {
         signal: registration.signal,
         request: api,
         navigate: async (path) => {
@@ -341,6 +351,20 @@ if (developmentBuild) {
         </a>
         <a
           class="flex w-full items-center gap-[.7rem] rounded-lg border-0 p-3 text-left text-sm no-underline cursor-pointer focus-visible:outline-3 focus-visible:outline-focus focus-visible:outline-offset-4"
+          href="/notifications"
+          :class="
+            page === 'notifications'
+              ? 'bg-surface-muted font-[550] text-foreground [&>svg]:text-accent-text'
+              : 'text-muted hover:bg-surface-hover'
+          "
+          :aria-current="page === 'notifications' ? 'page' : undefined"
+          @click="navigate($event, '/notifications')"
+        >
+          <Bell :size="19" />
+          Notifications
+        </a>
+        <a
+          class="flex w-full items-center gap-[.7rem] rounded-lg border-0 p-3 text-left text-sm no-underline cursor-pointer focus-visible:outline-3 focus-visible:outline-focus focus-visible:outline-offset-4"
           href="/users"
           :class="
             page === 'users'
@@ -352,6 +376,20 @@ if (developmentBuild) {
         >
           <Users :size="19" />
           Users
+        </a>
+        <a
+          class="flex w-full items-center gap-[.7rem] rounded-lg border-0 p-3 text-left text-sm no-underline cursor-pointer focus-visible:outline-3 focus-visible:outline-focus focus-visible:outline-offset-4"
+          href="/api-keys"
+          :class="
+            page === 'api-keys'
+              ? 'bg-surface-muted font-[550] text-foreground [&>svg]:text-accent-text'
+              : 'text-muted hover:bg-surface-hover'
+          "
+          :aria-current="page === 'api-keys' ? 'page' : undefined"
+          @click="navigate($event, '/api-keys')"
+        >
+          <KeySquare :size="19" />
+          API Keys
         </a>
       </nav>
       <div class="mt-auto">
@@ -397,6 +435,18 @@ if (developmentBuild) {
         :current-user="user"
         @open-navigation="sidebarOpen = true"
         @signed-out="signedOut"
+        @auth-error="checkSession"
+      />
+      <APIKeysPage
+        v-else-if="page === 'api-keys'"
+        @open-navigation="sidebarOpen = true"
+        @signed-out="signedOut('Session expired. Sign in again.')"
+        @auth-error="checkSession"
+      />
+      <NotificationsPage
+        v-else-if="page === 'notifications'"
+        @open-navigation="sidebarOpen = true"
+        @signed-out="signedOut('Session expired. Sign in again.')"
         @auth-error="checkSession"
       />
       <CredentialsPage

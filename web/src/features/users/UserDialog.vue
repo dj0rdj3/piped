@@ -124,15 +124,15 @@ async function submit() {
       v-if="mode === 'password'"
       class="text-sm leading-relaxed text-muted"
     >
-      <strong>{{ target.username }}</strong>
-      - Signs out all sessions.
+      <strong class="[overflow-wrap:anywhere]">{{ target.username }}</strong>
+      - Signs out all sessions and revokes API keys.
     </p>
     <p
       v-if="mode === 'delete'"
       class="text-sm leading-relaxed text-muted"
     >
       Permanently remove
-      <strong>{{ target.username }}</strong>
+      <strong class="[overflow-wrap:anywhere]">{{ target.username }}</strong>
       ?
     </p>
 

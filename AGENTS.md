@@ -8,9 +8,9 @@ requirements, dependency approvals, and subsequent user decisions.
 - Keep production and development builds CGO-free (`CGO_ENABLED=0`), including all
   future database drivers and dependencies. CGO is permitted only for race tests.
 
-- Update `README.md` in the same change whenever setup or configuration changes,
-  including prerequisites, installation/build steps, startup commands, settings,
-  defaults, and development workflows. Keep instructions and examples accurate.
+- Keep `README.md` additions extremely short and limited to actual user-facing
+  features. Do not present internal cleanup or migration organization as features.
+  Do not add migration-squash explanations to `README.md` or `DEV.md`.
 - Update `.env.example` in the same change whenever supported settings are added,
   removed, or given different defaults. Keep it aligned with generated configuration
   and the README; required secrets must have empty placeholders, never real values.
@@ -33,6 +33,10 @@ requirements, dependency approvals, and subsequent user decisions.
   in markup (for example, `&ndash;`, `&mdash;`, and `&hellip;`), plain ASCII punctuation
   in terminal/API messages, and Unicode escapes when a non-ASCII value is needed
   in code or test fixtures. Preserve support for Unicode user input.
+- Keep the UI uniform and consistent by default. Check comparable existing pages
+  before adding UI, and reuse their table toolbars, header typography, spacing,
+  borders, row heights, controls, and empty/loading states. Avoid redundant
+  explanations above tables; introduce a different pattern only when the task needs it.
 - Use Tailwind utility classes for frontend styling. Custom CSS is a last resort
   for styling Tailwind cannot express; shared design tokens belong in its theme.
 - Run checks appropriate to the change. `make check` runs the existing project
@@ -41,7 +45,9 @@ requirements, dependency approvals, and subsequent user decisions.
 - Remove temporary verification scripts, copied source trees, binaries, screenshots,
   and logs when a task finishes. Keep reusable checks in `scripts` and only needed
   final reports in `test-results`; do not accumulate task leftovers in `.cache`.
-  Use `make clean-cache` to clear project caches when no builds or checks are running.
+  Preserve build and dependency caches between normal runs. Use `make clean-cache`
+  only occasionally when caches are stale, corrupt, excessively large, or the user
+  requests cleanup, and only when no builds or checks are running.
 
 ## Internal development access
 
@@ -50,7 +56,7 @@ requirements, dependency approvals, and subsequent user decisions.
   functionality, including mutations needed by the task, rather than limiting them to reads.
 - Discover the available MCP tools and browser WebMCP tools before using them. Prefer MCP
   for structured application operations, WebMCP for supported browser navigation and forms,
-  and `/api/v1` for direct HTTP checks or operations not available through a connected tool.
+  and `/api/development/v1` for direct HTTP checks or operations not available through a connected tool.
   If a tool connection is unavailable, use the authenticated local endpoint or app controls.
 - Create and manage test records through these interfaces instead of editing SQLite directly,
   so application validation, authorization, and encryption are exercised. Use temporary
@@ -58,6 +64,9 @@ requirements, dependency approvals, and subsequent user decisions.
 - Verify affected MCP, WebMCP, or API behavior when changing features they expose, alongside
   the appropriate lint and automated checks. Use browser controls when verifying rendering
   or interactions requires them. Do not invoke unrelated mutations just to exercise a tool.
+- Keep the development HTTP API, MCP, WebMCP, fixture cleanup, and internal CLI key
+  issuance out of production artifacts. The user-facing production API is separate;
+  neither API accepts the other API's keys.
 - The development API and MCP integrations are internal AI tooling. Do not add a GUI,
   navigation item, or browser endpoint for managing development API keys.
 - Use the development build and loopback URLs with the app's existing `.env` and

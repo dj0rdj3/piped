@@ -1,10 +1,10 @@
 <script setup>
 import { computed, onUnmounted, ref, watch } from 'vue';
-import { ArrowDown, ArrowUp, LoaderCircle, Search, Terminal } from '@lucide/vue';
+import { ArrowDown, ArrowUp, LoaderCircle, Search, Terminal, Trash2 } from '@lucide/vue';
 import AppButton from '../../components/ui/AppButton.vue';
 import AppDialog from '../../components/ui/AppDialog.vue';
 import FormInput from '../../components/ui/FormInput.vue';
-import JobSecretsEditor from './JobSecretsEditor.vue';
+import NamedSecretsEditor from '../../components/ui/NamedSecretsEditor.vue';
 import StatusMessage from '../../components/ui/StatusMessage.vue';
 import { api } from '../../lib/api.js';
 import { usePageLoad } from '../../composables/usePageLoad.js';
@@ -35,6 +35,9 @@ const secretInputs = ref(
   (props.target?.secret_names || []).map((name, key) => ({ key, name, value: '', stored: true })),
 );
 const hosts = ref([]);
+const notificationTargets = ref([]);
+const notificationIDs = ref([...(props.target?.notification_target_ids || [])]);
+const initialNotificationIDs = ref([...notificationIDs.value]);
 const query = ref('');
 const error = ref('');
 const busy = ref(false);
@@ -47,6 +50,9 @@ const dirty = formChanges(
     name.value,
     script.value,
     hostIDs.value,
+    JSON.stringify(notificationIDs.value) === JSON.stringify(initialNotificationIDs.value)
+      ? null
+      : notificationIDs.value,
     scheduleEnabled.value,
     cronSchedule.value,
     runAsSudo.value,
@@ -68,8 +74,8 @@ watch(
   (expression, _previous, onCleanup) => {
     preview.value = [];
     previewError.value = '';
-    previewLoading.value = !!expression.trim();
-    if (!expression.trim() || props.mode === 'delete') {
+    previewLoading.value = props.mode !== 'delete' && !!expression.trim();
+    if (!previewLoading.value) {
       return;
     }
     const controller = new AbortController();
@@ -121,6 +127,8 @@ const canSave = computed(
   () =>
     !loadingHosts.value &&
     !hostError.value &&
+    !loadingNotifications.value &&
+    !notificationError.value &&
     hostIDs.value.length > 0 &&
     scriptBytes.value <= 65536,
 );
@@ -140,6 +148,25 @@ const {
   () => api('/hosts'),
   (result) => {
     hosts.value = result.hosts;
+  },
+  () => emit('auth-error'),
+  { loadOnMount: props.mode !== 'delete' },
+);
+
+const {
+  load: loadNotifications,
+  loading: loadingNotifications,
+  error: notificationError,
+} = usePageLoad(
+  () => api('/notifications'),
+  (result) => {
+    notificationTargets.value = result.targets;
+    if (props.mode === 'create') {
+      notificationIDs.value = result.targets
+        .filter((target) => target.enabled && target.default_enabled)
+        .map((target) => target.id);
+      initialNotificationIDs.value = [...notificationIDs.value];
+    }
   },
   () => emit('auth-error'),
   { loadOnMount: props.mode !== 'delete' },
@@ -176,6 +203,7 @@ async function submit() {
         name: name.value,
         script: script.value,
         host_ids: hostIDs.value,
+        notification_target_ids: notificationIDs.value,
         execution_mode: executionMode.value,
         run_as_sudo: runAsSudo.value,
         schedule: { cron: cronSchedule.value, enabled: scheduleEnabled.value },
@@ -215,17 +243,26 @@ async function submit() {
     :title="title"
     title-id="job-dialog-title"
     :busy="busy"
-    wide
+    :wide="mode !== 'delete'"
     @close="emit('close')"
   >
-    <template #icon><Terminal :size="21" /></template>
+    <template #icon>
+      <Trash2
+        v-if="mode === 'delete'"
+        :size="21"
+      />
+      <Terminal
+        v-else
+        :size="21"
+      />
+    </template>
     <form @submit.prevent="submit">
       <p
         v-if="mode === 'delete'"
-        class="my-4 text-sm text-muted"
+        class="text-sm leading-relaxed text-muted"
       >
         Permanently remove
-        <strong>{{ target.name }}</strong>
+        <strong class="[overflow-wrap:anywhere]">{{ target.name }}</strong>
         and its script?
       </p>
       <fieldset
@@ -354,7 +391,71 @@ async function submit() {
             </template>
           </div>
         </fieldset>
-        <JobSecretsEditor v-model="secretInputs" />
+        <fieldset class="my-4 min-w-0 border-0 p-0">
+          <legend
+            class="mb-2 flex w-full items-center gap-3 px-0 text-sm font-[550] after:h-px after:flex-1 after:bg-border"
+          >
+            Notifications
+          </legend>
+          <StatusMessage
+            v-if="notificationError"
+            variant="error"
+          >
+            {{ notificationError }}
+            <template #action>
+              <AppButton
+                variant="text"
+                @click="loadNotifications"
+              >
+                Retry
+              </AppButton>
+            </template>
+          </StatusMessage>
+          <p
+            v-else-if="loadingNotifications"
+            class="py-3 text-sm text-muted"
+            role="status"
+          >
+            Loading notification targets&hellip;
+          </p>
+          <p
+            v-else-if="!notificationTargets.length"
+            class="py-3 text-sm text-muted"
+          >
+            Add a target on the Notifications page.
+          </p>
+          <div
+            v-else
+            class="max-h-40 overflow-y-auto rounded-lg border border-border"
+          >
+            <label
+              v-for="notification in notificationTargets"
+              :key="notification.id"
+              class="flex min-w-0 cursor-pointer items-center gap-3 border-b border-border px-3 py-2 text-sm last:border-0 hover:bg-surface-hover"
+            >
+              <input
+                v-model="notificationIDs"
+                type="checkbox"
+                :value="notification.id"
+                class="size-4 shrink-0 accent-accent"
+              />
+              <span class="min-w-0 flex-1 truncate">{{ notification.name }}</span>
+              <span
+                v-if="!notification.enabled"
+                class="text-xs text-muted"
+              >
+                Disabled
+              </span>
+            </label>
+          </div>
+        </fieldset>
+        <NamedSecretsEditor
+          v-model="secretInputs"
+          id-prefix="job-secret"
+          name-pattern="[A-Z_][A-Z0-9_]*"
+          name-placeholder="API_TOKEN"
+          description="Injected as environment variables. Values cannot be viewed after saving."
+        />
         <p
           v-if="mode === 'duplicate' && target.secret_names?.length"
           class="-mt-2 mb-4 text-xs text-muted"

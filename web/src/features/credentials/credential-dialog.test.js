@@ -66,6 +66,7 @@ const renderImport = await templateRenderer('./CredentialDialog.vue', {
   Check: 'svg',
   Copy: 'svg',
   KeyRound: 'svg',
+  Trash2: 'svg',
   LoaderCircle: 'svg',
 });
 

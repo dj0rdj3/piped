@@ -5,7 +5,7 @@ import (
 	"piped/internal/store"
 )
 
-// Browser and development APIs share handlers and resource availability.
+// Browser and bearer APIs share handlers and resource availability.
 // Their authentication wrappers remain separate; only bearer keys use scopes.
 func (s *Server) resourceRoutes() []response.Route {
 	routes := []response.Route{
@@ -28,6 +28,14 @@ func (s *Server) resourceRoutes() []response.Route {
 			response.Route{Method: "POST", Path: "/hosts", Scope: store.ScopeHostsWrite, Handler: s.saveHost},
 			response.Route{Method: "PUT", Path: "/hosts/{id}", Scope: store.ScopeHostsWrite, Handler: s.saveHost},
 			response.Route{Method: "DELETE", Path: "/hosts/{id}", Scope: store.ScopeHostsWrite, Handler: s.deleteHost},
+		)
+	}
+	if s.config.Notifications != nil {
+		routes = append(routes,
+			response.Route{Method: "GET", Path: "/notifications", Scope: store.ScopeNotificationsRead, Handler: s.listNotifications},
+			response.Route{Method: "POST", Path: "/notifications", Scope: store.ScopeNotificationsWrite, Handler: s.saveNotification},
+			response.Route{Method: "PUT", Path: "/notifications/{id}", Scope: store.ScopeNotificationsWrite, Handler: s.saveNotification},
+			response.Route{Method: "DELETE", Path: "/notifications/{id}", Scope: store.ScopeNotificationsWrite, Handler: s.deleteNotification},
 		)
 	}
 	if s.config.Jobs != nil {

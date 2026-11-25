@@ -20,18 +20,19 @@ type JobSchedule struct {
 }
 
 type Job struct {
-	LatestRun     *JobRunSummary `json:"latest_run,omitempty"`
-	Schedule      *JobSchedule   `json:"schedule"`
-	SecretNames   []string       `json:"secret_names"`
-	ID            string         `json:"id"`
-	Name          string         `json:"name"`
-	Script        string         `json:"script"`
-	HostIDs       []string       `json:"host_ids"`
-	ExecutionMode string         `json:"execution_mode"`
-	RunAsSudo     bool           `json:"run_as_sudo"`
-	StopOnFailure bool           `json:"stop_on_failure"`
-	Version       int64          `json:"version"`
-	CreatedAt     int64          `json:"created_at"`
+	NotificationTargetIDs []string       `json:"notification_target_ids"`
+	LatestRun             *JobRunSummary `json:"latest_run,omitempty"`
+	Schedule              *JobSchedule   `json:"schedule"`
+	SecretNames           []string       `json:"secret_names"`
+	ID                    string         `json:"id"`
+	Name                  string         `json:"name"`
+	Script                string         `json:"script"`
+	HostIDs               []string       `json:"host_ids"`
+	ExecutionMode         string         `json:"execution_mode"`
+	RunAsSudo             bool           `json:"run_as_sudo"`
+	StopOnFailure         bool           `json:"stop_on_failure"`
+	Version               int64          `json:"version"`
+	CreatedAt             int64          `json:"created_at"`
 }
 
 type JobRunSummary struct {
@@ -49,7 +50,7 @@ type JobCopy struct {
 const jobColumns = `id, name, script, execution_mode, stop_on_failure, version, created_at, run_as_sudo, schedule_cron, schedule_enabled`
 
 func scanJob(row interface{ Scan(...any) error }) (Job, error) {
-	job := Job{HostIDs: []string{}, SecretNames: []string{}, Schedule: &JobSchedule{}}
+	job := Job{NotificationTargetIDs: []string{}, HostIDs: []string{}, SecretNames: []string{}, Schedule: &JobSchedule{}}
 	err := row.Scan(&job.ID, &job.Name, &job.Script, &job.ExecutionMode, &job.StopOnFailure, &job.Version, &job.CreatedAt, &job.RunAsSudo, &job.Schedule.Cron, &job.Schedule.Enabled)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Job{}, ErrNotFound
@@ -117,6 +118,25 @@ func (s *Store) Jobs(ctx context.Context, actor Actor) ([]Job, error) {
 		jobs[index].SecretNames = append(jobs[index].SecretNames, name)
 	}
 	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	rows, err = tx.QueryContext(ctx, `SELECT job_id, target_id FROM job_notification_targets ORDER BY job_id, target_id`)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var jobID, targetID string
+		if err := rows.Scan(&jobID, &targetID); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		jobs[indices[jobID]].NotificationTargetIDs = append(jobs[indices[jobID]].NotificationTargetIDs, targetID)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
 		return nil, err
 	}
 	if err := rows.Close(); err != nil {
@@ -243,6 +263,9 @@ func (s *Store) saveJob(ctx context.Context, actor Actor, job Job, secretChanges
 			}
 			return Job{}, err
 		}
+	}
+	if err := saveJobNotifications(ctx, tx, &job, create, source); err != nil {
+		return Job{}, err
 	}
 	if err := saveJobSecrets(ctx, tx, job.ID, secretChanges, copiedSecrets); err != nil {
 		return Job{}, err

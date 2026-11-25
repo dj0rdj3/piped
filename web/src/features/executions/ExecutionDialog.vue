@@ -753,12 +753,6 @@ async function decide(accept) {
       @close="approval = null"
     >
       <template #icon><ShieldCheck :size="21" /></template>
-      <StatusMessage
-        v-if="error"
-        variant="error"
-      >
-        {{ error }}
-      </StatusMessage>
       <p class="my-3 text-sm">{{ approval.address }}:{{ approval.port }}</p>
       <p
         v-if="approval.previous_fingerprint"
@@ -776,7 +770,13 @@ async function decide(accept) {
         class="max-h-32 overflow-auto rounded-md border border-border p-2 text-xs whitespace-pre-wrap break-all"
         >{{ approval.public_key }}</pre>
       <p class="mt-3 text-xs text-muted">Compare this key with a trusted source for the host.</p>
-      <div class="mt-4 flex justify-end gap-2">
+      <StatusMessage
+        v-if="error"
+        variant="error"
+      >
+        {{ error }}
+      </StatusMessage>
+      <div class="mt-5 flex justify-end gap-2.5">
         <AppButton
           :disabled="busy"
           @click="decide(false)"

@@ -14,6 +14,62 @@ const job = {
   schedule: { cron: '0 2 * * *', enabled: true },
 };
 
+test('late session checks cannot sign out a newly authenticated account', async (t) => {
+  const location = new URL('http://127.0.0.1/login');
+  const pending = [];
+  let initialized = false;
+  const fixture = await mountComponent('App.vue', {
+    browser: {
+      location,
+      history: {
+        state: null,
+        replaceState(state, _title, path) {
+          this.state = state;
+          location.href = new URL(path, location).href;
+        },
+      },
+      addEventListener() {},
+      removeEventListener() {},
+    },
+    globals: { document: {} },
+    request() {
+      if (!initialized) {
+        initialized = true;
+        return Promise.resolve({ user: currentUser });
+      }
+      const response = deferred();
+      pending.push(response);
+      return response.promise;
+    },
+  });
+  t.after(fixture.unmount);
+  await settle();
+  const checking = fixture.state.checkSession();
+  fixture.state.signedOut('', false);
+  const replacement = { id: 2, username: 'replacement' };
+  fixture.state.authenticated(replacement);
+  pending[0].reject(Object.assign(new Error('Expired'), { status: 401 }));
+  await checking;
+  assert.equal(fixture.state.user.id, replacement.id);
+  assert.equal(fixture.state.loginNotice, '');
+
+  const sameAccount = fixture.state.checkSession();
+  fixture.state.signedOut('', false);
+  fixture.state.authenticated({ ...replacement });
+  pending[1].reject(Object.assign(new Error('Expired'), { status: 401 }));
+  await sameAccount;
+  assert.equal(fixture.state.user.id, replacement.id);
+  assert.equal(fixture.state.loginNotice, '');
+
+  const current = fixture.state.checkSession();
+  pending[2].reject(Object.assign(new Error('Expired'), { status: 401 }));
+  await current;
+  assert.equal(fixture.state.user, null);
+  assert.match(fixture.state.loginNotice, /Session expired/);
+  await fixture.state.checkSession();
+  assert.equal(pending.length, 3);
+});
+
 test('sign-in guards duplicate submissions and clears the password on success and failure', async (t) => {
   const pending = [];
   const fixture = await mountComponent('features/auth/LoginForm.vue', {
@@ -123,7 +179,10 @@ for (const [component, resource, load, loading, props] of [
     const pending = [];
     const fixture = await mountComponent('features/' + component + '.vue', {
       props,
-      request() {
+      request(path) {
+        if (path === '/notifications') {
+          return Promise.resolve({ targets: [] });
+        }
         const response = deferred();
         pending.push(response);
         return response.promise;
@@ -169,6 +228,9 @@ test('Jobs background refreshes cannot overwrite newer summaries or emit a stale
     browser: { setInterval: () => 1, clearInterval() {} },
     globals: { document: { visibilityState: 'visible' } },
     request(path) {
+      if (path === '/notifications') {
+        return Promise.resolve({ targets: [] });
+      }
       if (path === '/hosts') {
         return Promise.resolve({ hosts: [host] });
       }
@@ -233,6 +295,9 @@ test('job duplication preserves stored secrets and cron but starts with scheduli
     props: { mode: 'duplicate', target: job },
     browser: { setTimeout: () => 1, clearTimeout() {} },
     request(path, options) {
+      if (path === '/notifications') {
+        return Promise.resolve({ targets: [] });
+      }
       if (!options) {
         return Promise.resolve({ hosts: [host] });
       }
@@ -316,4 +381,19 @@ test('a host-key decision stays pinned to its host and cannot clear a newer appr
   await saving;
   assert.equal(fixture.state.approval.fingerprint, 'new-fingerprint');
   assert.equal(fixture.state.busy, false);
+});
+
+test('leaving sign-in clears the password and ignores a late authentication response', async () => {
+  const pending = deferred();
+  const fixture = await mountComponent('features/auth/LoginForm.vue', {
+    request: () => pending.promise,
+  });
+  fixture.state.username = 'fixture';
+  fixture.state.password = 'fixture-password';
+  const signingIn = fixture.state.submit();
+  fixture.unmount();
+  assert.equal(fixture.state.password, '');
+  pending.resolve({ user: currentUser, development: true });
+  await signingIn;
+  assert.deepEqual(fixture.events, []);
 });

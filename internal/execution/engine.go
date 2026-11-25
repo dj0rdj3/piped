@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"golang.org/x/crypto/ssh"
+	"piped/internal/notifications"
 	"piped/internal/secrets"
 	"piped/internal/store"
 )
@@ -50,6 +51,7 @@ type activeRun struct {
 }
 
 type Engine struct {
+	notifier         *notifications.Service
 	db               *store.Store
 	vault            *secrets.Vault
 	logger           *slog.Logger
@@ -71,14 +73,15 @@ func New(ctx context.Context, db *store.Store, vault *secrets.Vault, logger *slo
 	if logger == nil {
 		logger = slog.Default()
 	}
-	if err := db.VerifyVault(ctx, vault); err != nil {
+	notifier, err := notifications.New(ctx, db, vault)
+	if err != nil {
 		return nil, err
 	}
 	if err := db.RecoverRuns(ctx); err != nil {
 		return nil, err
 	}
 	ctx, cancel := context.WithCancel(ctx)
-	engine := &Engine{db: db, vault: vault, logger: logger, ctx: ctx, cancel: cancel, active: map[string]*activeRun{}, now: time.Now}
+	engine := &Engine{notifier: notifier, db: db, vault: vault, logger: logger, ctx: ctx, cancel: cancel, active: map[string]*activeRun{}, now: time.Now}
 	engine.runner = engine.runSSH
 	engine.wg.Add(1)
 	go func() {
@@ -194,9 +197,17 @@ func (e *Engine) execute(runID string, job store.Job, connections []store.Connec
 				e.logger.Warn("host execution failed", "run", runID, "host", c.Host.ID)
 			}
 		}
-		if updateErr := e.db.SetRunHost(context.Background(), runID, c.Host.ID, status, message, code); updateErr != nil {
+		updateErr := e.db.SetRunHost(context.Background(), runID, c.Host.ID, status, message, code)
+		if updateErr != nil {
 			e.logger.Error("execution state failed", "error", updateErr)
 			status = "failed"
+		}
+		if updateErr == nil && len(c.Notifications) > 0 {
+			e.wg.Add(1)
+			go func() {
+				defer e.wg.Done()
+				e.notifier.NotifyHost(e.ctx, e.logger, runID, job.Name, c, status)
+			}()
 		}
 		results[index] = status
 	}

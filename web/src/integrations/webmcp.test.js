@@ -57,11 +57,13 @@ test('unsupported browsers work without WebMCP', async () => {
 test('WebMCP reads use browser APIs and forms require human completion', async () => {
   const h = harness();
   const stop = await registerWebMCP(h.context, h.options);
-  assert.equal(h.tools.size, 12);
+  assert.equal(h.tools.size, 13);
   for (const tool of h.tools.values()) {
     assert.equal(tool.annotations.readOnlyHint, true);
     assert.doesNotMatch(JSON.stringify(tool.inputSchema), /password|private_key|token/);
   }
+  await h.tools.get('piped_list_notification_targets').execute({});
+  assert.equal(h.requests.pop().path, '/notifications');
   await h.tools.get('piped_list_hosts').execute({});
   await h.tools.get('piped_list_users').execute({});
   await h.tools.get('piped_list_credentials').execute({});
@@ -113,7 +115,7 @@ test('WebMCP reads use browser APIs and forms require human completion', async (
   }
 });
 
-test('logout blocks an in-flight read result and removes legacy registrations', async () => {
+test('logout aborts registrations and blocks an in-flight read result', async () => {
   let resolve;
   const h = harness({
     request: () =>
@@ -121,14 +123,12 @@ test('logout blocks an in-flight read result and removes legacy registrations', 
         resolve = done;
       }),
   });
-  const removed = [];
-  h.context.unregisterTool = (name) => removed.push(name);
   const stop = await registerWebMCP(h.context, h.options);
   const pending = h.tools.get('piped_list_users').execute({});
   stop();
   resolve({ users: [{ username: 'old-account' }] });
   await assert.rejects(pending, /Sign in required/);
-  assert.deepEqual(removed, [...h.tools.keys()]);
+  assert.ok(h.registrations.every(({ signal }) => signal.aborted));
 });
 
 test('external cancellation during registration prevents stale-account tools', async () => {
@@ -148,6 +148,30 @@ test('external cancellation during registration prevents stale-account tools', a
   await pending;
   assert.equal(h.tools.size, 1);
   assert.equal(h.requests.length, 0);
+});
+
+test('late authorization failures from stopped or cancelled tools do not affect the app session', async () => {
+  for (const action of ['logout', 'cancel']) {
+    let reject;
+    const h = harness({
+      request: () =>
+        new Promise((_resolve, fail) => {
+          reject = fail;
+        }),
+    });
+    const stop = await registerWebMCP(h.context, h.options);
+    const controller = new AbortController();
+    const pending = h.tools.get('piped_list_users').execute({}, { signal: controller.signal });
+    if (action === 'logout') {
+      stop();
+    } else {
+      controller.abort();
+    }
+    reject(Object.assign(new Error('Expired'), { status: 401 }));
+    await assert.rejects(pending, /Expired/);
+    assert.equal(h.authErrors, 0);
+    stop();
+  }
 });
 
 test('expired sessions notify the app and failed registrations roll back', async () => {

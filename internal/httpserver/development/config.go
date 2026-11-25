@@ -11,9 +11,11 @@ import (
 	"piped/internal/execution"
 	"piped/internal/hosts"
 	"piped/internal/jobs"
+	"piped/internal/notifications"
 )
 
 type Config struct {
+	Notifications  *notifications.Service
 	Origin, Listen string
 	Auth           *auth.Service
 	Credentials    *credentials.Service

@@ -1,7 +1,14 @@
 <script setup>
 import { Plus, Trash2 } from '@lucide/vue';
-import AppButton from '../../components/ui/AppButton.vue';
-import FormInput from '../../components/ui/FormInput.vue';
+import AppButton from './AppButton.vue';
+import FormInput from './FormInput.vue';
+
+defineProps({
+  idPrefix: { type: String, required: true },
+  namePattern: { type: String, default: '[A-Za-z_][A-Za-z0-9_]*' },
+  namePlaceholder: { type: String, default: 'token' },
+  description: { type: String, required: true },
+});
 
 const rows = defineModel({ type: Array, required: true });
 let nextKey = rows.value.length;
@@ -19,7 +26,7 @@ function addSecret() {
       Secrets
     </legend>
     <p class="text-xs text-muted">
-      Injected as environment variables. Values cannot be viewed after saving.
+      {{ description }}
     </p>
     <div
       v-for="(secret, index) in rows"
@@ -28,33 +35,33 @@ function addSecret() {
     >
       <div class="min-w-0">
         <label
-          :for="`job-secret-name-${secret.key}`"
+          :for="`${idPrefix}-name-${secret.key}`"
           class="mb-1.5 block text-xs text-muted"
         >
           Name
         </label>
         <FormInput
-          :id="`job-secret-name-${secret.key}`"
+          :id="`${idPrefix}-name-${secret.key}`"
           v-model="secret.name"
           :aria-label="`Secret ${index + 1} name`"
           :readonly="secret.stored"
           required
-          pattern="[A-Z_][A-Z0-9_]*"
+          :pattern="namePattern"
           maxlength="64"
           autocomplete="off"
           spellcheck="false"
-          placeholder="API_TOKEN"
+          :placeholder="namePlaceholder"
         />
       </div>
       <div class="min-w-0 max-[560px]:col-start-1 max-[560px]:row-start-auto">
         <label
-          :for="`job-secret-value-${secret.key}`"
+          :for="`${idPrefix}-value-${secret.key}`"
           class="mb-1.5 block text-xs text-muted"
         >
           {{ secret.stored ? 'Replace value' : 'Value' }}
         </label>
         <FormInput
-          :id="`job-secret-value-${secret.key}`"
+          :id="`${idPrefix}-value-${secret.key}`"
           v-model="secret.value"
           :aria-label="`Secret ${index + 1} value`"
           type="password"

@@ -23,6 +23,7 @@ import (
 	"piped/internal/hosts"
 	"piped/internal/httpserver"
 	"piped/internal/jobs"
+	"piped/internal/notifications"
 	"piped/internal/secrets"
 	"piped/internal/store"
 	"piped/web"
@@ -170,6 +171,10 @@ func run(args []string, input io.Reader, output io.Writer) error {
 	if err != nil {
 		return err
 	}
+	notificationService, err := notifications.New(ctx, db, configuration.Vault)
+	if err != nil {
+		return err
+	}
 	listener, err := net.Listen("tcp", configuration.ListenAddress)
 	if err != nil {
 		return err
@@ -189,6 +194,7 @@ func run(args []string, input io.Reader, output io.Writer) error {
 		Credentials:    credentialService,
 		Hosts:          hostService,
 		Jobs:           jobService,
+		Notifications:  notificationService,
 		Executions:     engine,
 		Development:    options.development,
 	})
