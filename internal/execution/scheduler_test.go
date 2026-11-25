@@ -3,6 +3,7 @@ package execution
 import (
 	"context"
 	"io"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -12,6 +13,79 @@ import (
 	"piped/internal/jobs"
 	"piped/internal/store"
 )
+
+type schedulerErrorWriter struct {
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (w *schedulerErrorWriter) Write(data []byte) (int, error) {
+	close(w.entered)
+	<-w.release
+	return len(data), nil
+}
+
+func TestPendingSchedulerBatchCleansUpOnErrorAndCancellation(t *testing.T) {
+	f := newFixture(t, "sequential", false)
+	f.engine.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	output := &schedulerErrorWriter{make(chan struct{}), make(chan struct{})}
+	engine := &Engine{db: f.db, ctx: ctx, now: time.Now, logger: slog.New(slog.NewTextHandler(output, nil))}
+	at := time.Now().Truncate(time.Minute)
+	// No schedules: normal completion must release the batch as well.
+	engine.runSchedules(at)
+	if engine.schedulePending != 0 {
+		t.Fatal("normal scheduler batch leaked its pending registration")
+	}
+	if err := f.db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() {
+		engine.runSchedules(at.Add(time.Minute))
+		close(done)
+	}()
+	defer func() {
+		close(output.release)
+		<-done
+	}()
+	select {
+	case <-output.entered:
+	case <-time.After(time.Second):
+		t.Fatal("scheduler did not reach the lookup error")
+	}
+	// Error handling is still part of the batch, but must hold no admission lock.
+	if !engine.mu.TryLock() {
+		t.Fatal("scheduler held the admission lock while reporting an error")
+	}
+	allowed, err := engine.maintenanceWindow(context.Background())
+	pending := engine.schedulePending
+	engine.mu.Unlock()
+	if pending != 1 || allowed || err != nil {
+		t.Fatalf("maintenance eligibility during a pending error: pending=%d allowed=%v err=%v", pending, allowed, err)
+	}
+	// Duplicate and cancelled entries must not unregister the original batch.
+	engine.runSchedules(at.Add(time.Minute))
+	cancel()
+	engine.runSchedules(at.Add(2 * time.Minute))
+	engine.mu.Lock()
+	pending = engine.schedulePending
+	engine.mu.Unlock()
+	if pending != 1 {
+		t.Fatal("skipped scheduler entry changed another batch's registration")
+	}
+	// Drain the blocked error report and verify its defer ran after cancellation.
+	output.release <- struct{}{}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("scheduler did not finish error cleanup after cancellation")
+	}
+	if engine.schedulePending != 0 {
+		t.Fatal("cancelled scheduler batch leaked its pending registration")
+	}
+}
 
 func scheduledFixture(t *testing.T, expression string) (*engineFixture, *atomic.Int64, time.Time) {
 	t.Helper()
@@ -27,8 +101,10 @@ func scheduledFixture(t *testing.T, expression string) (*engineFixture, *atomic.
 	at := time.Now().Add(2 * time.Hour).Truncate(time.Minute)
 	clock := &atomic.Int64{}
 	clock.Store(at.Unix())
+	f.engine.mu.Lock()
 	f.engine.now = func() time.Time { return time.Unix(clock.Load(), 0) }
 	f.engine.scheduleMinute = at.Add(-time.Minute).Unix()
+	f.engine.mu.Unlock()
 	return f, clock, at
 }
 
@@ -146,7 +222,9 @@ func TestSchedulerDoesNotCatchUpAfterDelayOrRestart(t *testing.T) {
 	}
 	defer restarted.Close()
 	restartAt := jumped.Add(40 * time.Minute)
+	restarted.mu.Lock()
 	restarted.now = func() time.Time { return restartAt }
+	restarted.mu.Unlock()
 	restarted.StartScheduler()
 	restarted.StartScheduler()
 	if len(schedulerRuns(t, f)) != 1 || restarted.scheduleMinute != restartAt.Unix() {

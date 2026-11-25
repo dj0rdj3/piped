@@ -354,54 +354,14 @@ func notificationSnapshot(ctx context.Context, tx *transaction, jobID string) ([
 // NotificationOutput is internal worker access to already masked, persisted output.
 // Bound memory even for very large logs and a single unterminated line.
 func (s *Store) NotificationOutput(ctx context.Context, runID, hostID string) (string, error) {
-	chunks := [][]byte{}
-	size := 0
-	before := int64(0)
-	// Page by the output cursor so drivers never drain an entire large log when
-	// closing a partially consumed result. Small writes still count toward bytes.
-	for size < 256*1024 {
-		query := `SELECT id, data FROM run_output WHERE run_id = ? AND host_id = ?`
-		arguments := []any{runID, hostID}
-		if before > 0 {
-			query += ` AND id < ?`
-			arguments = append(arguments, before)
-		}
-		rows, err := s.db.QueryContext(ctx, query+` ORDER BY id DESC LIMIT 256`, arguments...)
-		if err != nil {
-			return "", err
-		}
-		count := 0
-		for rows.Next() {
-			var data []byte
-			if err := rows.Scan(&before, &data); err != nil {
-				rows.Close()
-				return "", err
-			}
-			chunks = append(chunks, data)
-			size += len(data)
-			count++
-			if size >= 256*1024 {
-				break
-			}
-		}
-		readErr := rows.Err()
-		closeErr := rows.Close()
-		if readErr != nil {
-			return "", readErr
-		}
-		if closeErr != nil {
-			return "", closeErr
-		}
-		if count < 256 {
-			break
-		}
+	reader := outputReader{store: s, ctx: ctx, runID: runID, hostID: hostID, descending: true}
+	chunks, _, err := outputPage(&reader, 0, 0)
+	if err != nil {
+		return "", err
 	}
-	output := make([]byte, 0, size)
-	for index := len(chunks) - 1; index >= 0; index-- {
-		output = append(output, chunks[index]...)
+	var output strings.Builder
+	for _, chunk := range chunks {
+		output.Write(chunk.Data)
 	}
-	if len(output) > 256*1024 {
-		output = output[len(output)-256*1024:]
-	}
-	return string(output), nil
+	return output.String(), nil
 }

@@ -8,7 +8,8 @@ Run shell scripts on your servers over SSH from a web interface.
 - Follow live terminal output, answer prompts, and cancel individual hosts.
 - Manage SSH keys, encrypted passwords and job secrets, and host-key approvals.
 - Send webhook notifications with body templates and per-job target selection.
-- Keep run history in SQLite, PostgreSQL, MariaDB, or MySQL.
+- Keep run history and compressed logs in SQLite, PostgreSQL, MariaDB, or MySQL.
+  SQLite reclaims space incrementally; PostgreSQL/MariaDB reclaim while jobs are idle.
 - Automate through the [production API](API.md) with scoped personal keys.
 
 ## Install

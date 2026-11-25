@@ -214,6 +214,9 @@ workflow. Simplicity and convenience must not compromise security or correctness
 - Retain all job output history/logs for a configurable number of days.
 - Configure retention in `.env` with `PIPED_LOG_RETENTION_DAYS`; a missing value defaults
   to 7 days, as confirmed on 2026-11-23.
+- Compress each host's complete execution output after it finishes, replacing raw storage.
+  Keep live output uncompressed and decompress finished output in bounded blocks on read.
+  Handle both formats transparently in the backend, without UI changes (R132).
 - Downloadable logs and a separate audit trail have not been confirmed.
 
 ## Future extensibility and exclusions
@@ -1261,3 +1264,161 @@ frontend/backend changes, preserving security and functionality. Use the WebMCP
 registration abort signal as its single lifecycle state, simplify iteration over
 pending migrations, and keep vault-secret checks readable. Use focused checks;
 no configuration, schema, dependency, or user-data changes.
+
+
+R132 (2026-11-25): Compress the whole execution log for each host when its job
+finishes there, replacing the uncompressed data. Decompress on demand in chunks
+when reading output. The follow-up explicitly requires backend-only behavior,
+with no UI changes or storage-format indicators. Keep live output uncompressed
+and distinguish raw and archived records internally. Use indexed, independent gzip
+blocks with bounded memory and atomic replacement; preserve original cursors, byte
+boundaries, live streaming, history pages, and webhook output. Run compression in
+the background without delaying subsequent hosts or run completion. Retry incomplete
+compression during startup/hourly maintenance, including recovered executions,
+without changing execution outcomes. Preserve retention and authorization. Use the
+standard library, with no new dependencies or environment settings.
+
+
+R133 (2026-11-25): Review compression and decompression for correctness, security,
+and simplification without removing functionality. Bound both database query branches
+before merging output, limit archive prefetch and compressed input size, reject trailing
+gzip members, and report corrupt/truncated archives as errors rather than end of output.
+Keep healthy tails readable without inflating older blocks just to detect another page.
+Use one background compression worker with coalesced completion wakeups; continue past
+damaged hosts during maintenance. Preserve atomic replacement, cursors, authorization,
+masking, retention, and UI behavior. Test real SQLite page/file/WAL usage with compressible
+and incompressible output, freed-page reuse, and compaction only in isolated fixtures.
+Report occupied space separately from allocated file size: compression releases reusable
+pages but does not automatically shrink SQLite files. Do not vacuum or reset the local
+development database. No new dependencies, schema changes, or settings.
+
+
+R134 (2026-11-25): Automatically return freed SQLite disk space in the background
+without pausing running jobs. Use incremental auto-vacuum, small bounded steps, a
+separate fail-fast maintenance connection, and yielding/retries around busy writers
+and pinned readers. Keep foreground WAL/FULL durability and authorization unchanged.
+Checkpoint safely so the database file shrinks and truncate an unpinned WAL without
+waiting for active transactions. Use a tracked worker with cancellation and joined
+shutdown. Verify actual file allocation decreases while another host continues
+persisting output, alongside busy-reader/writer, conversion, and integrity tests.
+
+New SQLite databases enable incremental vacuum before creating tables. Existing
+files need one automatic, record-preserving VACUUM conversion at server startup,
+before this engine admits jobs; never run a full VACUUM during job execution or
+from CLI-only key/account commands. This startup conversion supersedes R133's
+restriction on vacuuming the existing development database. Preserve records,
+secrets, output cursors, private permissions, .env, other database backends, and
+the unchanged UI. No dependencies, environment settings, or schema migrations.
+
+
+R135 (2026-11-25): Keep the SQLite reclamation review under three minutes. Pin
+the startup mode change and VACUUM to one fail-fast maintenance connection; prepare
+reclamation before run recovery so a failed conversion cannot change run status.
+Close maintenance resources if recovery fails and recheck foreground activity before
+WAL truncation. Preserve bounded steps, durability, data, settings, and dependencies;
+use focused lint, conversion/locking, race, and integration checks.
+
+
+R136 (2026-11-25): Run full checks and verify failed SQLite startup conversion
+leaves all existing table contents, runs, host statuses, sessions, output cursors,
+and database format unchanged. Force a read-only maintenance-connection failure
+in an isolated fixture and test through actual engine startup. Recheck automatic
+reclamation while another host persists logs. Include PostgreSQL and MariaDB
+startup/logging/output checks; SQLite maintenance remains inactive on them. Keep
+this verification under five minutes and preserve local application data/settings.
+
+
+R137 (2026-11-25): Verify actual PostgreSQL and MariaDB database disk allocation
+before compression, after compression, and after reclaiming deleted-row space,
+within five minutes. Use disposable disk-backed databases and both build profiles.
+Compare live payload sizes with filesystem allocation; account for PostgreSQL
+TOAST/index storage and MariaDB file-per-table allocation. Check ordinary vacuum,
+reuse-only vacuum, full rebuild, and InnoDB purge/OPTIMIZE behavior in fixtures.
+Verify byte-exact output after cleanup. Keep potentially blocking rebuilds out of
+production and preserve user databases, configuration, and dependencies.
+
+
+R138 (2026-11-25): Automatically reclaim PostgreSQL/MariaDB log-file space in
+the background, within a five-minute implementation/check window. To protect
+running jobs from table rebuild/metadata locks, defer physical reclamation until
+this engine has no active jobs, recheck persisted active runs, and retry deferred
+maintenance each minute. New admissions may briefly wait for the bounded idle
+maintenance operation. PostgreSQL uses ordinary VACUUM with SKIP_LOCKED and short
+lock/statement limits, never VACUUM FULL. MariaDB uses NOWAIT, INPLACE, LOCK=NONE
+rebuilds only for file-per-table logs with at least 1 MiB reusable space; never
+fall back to a blocking copy algorithm. Discard maintenance sessions so timeout
+settings cannot leak into execution queries. Preserve data, cursors, SQLite/MySQL
+behavior, credentials, and configuration. Test actual disk reclamation after idle
+and deferral during active runs on disposable databases in both profiles.
+
+
+R139 (2026-11-25): Review server reclamation under three minutes, including locks
+and admission. Cancel maintenance before waiting for the admission mutex at shutdown;
+limit maintenance pool acquisition and apply fail-fast session settings before table
+reads. Require no due/unprocessed schedule and a gap before the next cron occurrence
+of at least twice the maintenance estimate, using the three-second operation budget
+as a conservative floor and retaining higher observed durations. Keep eligibility
+checks under the manual/scheduled admission lock and fail closed on schedule errors.
+Manual future starts cannot be predicted and retain bounded serialization. Avoid
+server maintenance/schedule scans on SQLite/MySQL. Use targeted lint/race tests.
+
+
+R140 (2026-11-25): Run full project checks and the complete PostgreSQL/MariaDB
+internal-test matrix in both build profiles, under five minutes. Verify the exact
+2x scheduling-window boundary, shorter gaps, larger estimates, and due pending
+schedules, plus cancellation before the admission lock is released and joined
+shutdown. Use disposable databases, preserve user data/configuration, and clean
+all verification resources afterward.
+
+R141 (2026-11-25): Manual job starts should immediately request safe maintenance
+cancellation and take priority over new maintenance. Check fresh run-write authority
+before allowing interruption and revalidate it transactionally at admission. For
+PostgreSQL and MariaDB, cancel only the dedicated maintenance session's statement
+and wait for its server response/DDL cleanup before releasing the admission lock.
+Join cancellation before discarding that session so it cannot target a pooled job
+connection. Keep cancellation attempts bounded; if cancellation is unavailable,
+retain the existing maintenance timeout and safe admission barrier. Preserve the
+2x scheduled-job window and shutdown cancellation. No UI, configuration, or new
+dependencies. Allow up to ten minutes for implementation and verification.
+
+R142 (2026-11-25): Investigate and fix intermittent SQLite reclamation failures
+within eight minutes, rather than accepting a successful rerun. Add a deterministic
+regression for WAL growth after vacuum/checkpoint completion and measure physical
+database plus WAL allocation while another host continues logging. Preserve
+fail-fast separate maintenance connections, bounded steps, active-writer progress,
+byte-exact archived output, and cancellation/startup safeguards. Simplify stale
+maintenance state where possible and repeat both normal and race verification.
+The investigation also found that a fixed 16x whole-file shrink assertion ignores
+newly retained live log rows. Verify an empty freelist and at least 75% reduction
+in combined allocated database/WAL space instead, followed by sustained logging
+and byte-exact replay. Confirm the final regression rejects the old stale-state
+implementation; do not hide production reclamation failures with test reruns.
+
+R143 (2026-11-25): Run full project checks and the PostgreSQL/MariaDB internal-test
+matrix in both build profiles, including manual-start cancellation, admission and
+shutdown safety, SQLite reclamation regressions, and physical disk-reclamation
+checks. Keep verification under ten minutes, use disposable fixtures and database
+volumes, preserve deployment data/configuration and caches, and remove temporary
+verification tools, harness copies, binaries, and logs afterward.
+
+R144 (2026-11-25): Review final reclamation/cancellation, locks and admission under
+three minutes. Keep pending scheduler batches ineligible for maintenance between
+advancing the schedule watermark and finishing lookup/admission. Protect pending
+batch accounting with the existing admission mutex and clear it on every exit.
+Preserve manual priority, joined server cancellation, SQLite fail-fast reclamation,
+2x windows and shutdown behavior; verify focused regression/race checks.
+
+R145 (2026-11-25): Run the complete project checks and PostgreSQL/MariaDB matrix
+in both build profiles after the pending scheduler admission fix, under ten minutes.
+Include pending schedule batches, manual and server cancellation, shutdown, 2x
+windows, SQLite reclamation and physical server disk reclamation regressions.
+Capture individual server test results, use disposable disk-backed fixtures, preserve
+deployment data and caches, and clean up all temporary verification resources.
+
+R146 (2026-11-25): Review pending scheduler admission, locking, cancellation and
+error cleanup under three minutes. Preserve the existing mutex-protected counter
+and deferred cleanup unless a concrete defect requires changes. Exercise real batch
+registration through normal completion and lookup errors, verify maintenance stays
+deferred while an error is reported without holding admission locks, and verify
+duplicate/cancelled entries cannot clear another batch's registration. Run targeted
+lint/race checks; avoid unnecessary production abstractions or dependencies.

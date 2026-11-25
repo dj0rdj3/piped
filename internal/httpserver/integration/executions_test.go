@@ -154,4 +154,21 @@ func TestExecutionTailIsBoundedAndPreservesCursorHistory(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil || len(result.Chunks) != 16 || !bytes.Equal(result.Chunks[0].Data, all.Bytes()[:4001]) {
 		t.Fatal("full-history cursor changed")
 	}
+	forward := bytes.Clone(response.Body.Bytes())
+	response = h.request("GET", path+"?tail=1", nil, cookie)
+	expect(t, response, 200)
+	liveTail := bytes.Clone(response.Body.Bytes())
+	if err := h.store.SetRunHost(context.Background(), run.ID, host.ID, "succeeded", "", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.store.CompressRunOutput(context.Background(), run.ID, host.ID); err != nil {
+		t.Fatal(err)
+	}
+	for query, expected := range map[string][]byte{"?after=0": forward, "?tail=1": liveTail} {
+		response = h.request("GET", path+query, nil, cookie)
+		expect(t, response, 200)
+		if !bytes.Equal(response.Body.Bytes(), expected) {
+			t.Fatal("archived output changed the HTTP response")
+		}
+	}
 }

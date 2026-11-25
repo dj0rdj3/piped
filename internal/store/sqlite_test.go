@@ -21,6 +21,7 @@ func TestSQLiteConnectionPolicy(t *testing.T) {
 	// replacement must retain foreign keys, durability, and the busy timeout.
 	s.db.SetMaxIdleConns(0)
 	for name, want := range map[string]string{
+		"auto_vacuum":  "2",
 		"foreign_keys": "1", "busy_timeout": "5000",
 		"journal_mode": "wal", "synchronous": "2",
 	} {

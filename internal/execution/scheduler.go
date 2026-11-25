@@ -48,7 +48,13 @@ func (e *Engine) runSchedules(at time.Time) {
 		return
 	}
 	e.scheduleMinute = minute
+	e.schedulePending++
 	e.mu.Unlock()
+	defer func() {
+		e.mu.Lock()
+		e.schedulePending--
+		e.mu.Unlock()
+	}()
 	jobs, err := e.db.ScheduledJobs(e.ctx)
 	if err != nil {
 		if e.ctx.Err() == nil {

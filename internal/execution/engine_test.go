@@ -24,19 +24,21 @@ import (
 )
 
 type engineFixture struct {
-	engine *Engine
-	db     *store.Store
-	vault  *secrets.Vault
-	actor  store.Actor
-	hosts  []store.Host
-	job    store.Job
+	databasePath string
+	engine       *Engine
+	db           *store.Store
+	vault        *secrets.Vault
+	actor        store.Actor
+	hosts        []store.Host
+	job          store.Job
 }
 
 func newFixture(t *testing.T, mode string, stop bool) *engineFixture {
 	t.Helper()
 	ctx := context.Background()
 	driver, dsn := testdatabase.Settings(t)
-	db, err := store.OpenDatabase(ctx, store.Config{Driver: driver, DSN: dsn, Path: filepath.Join(t.TempDir(), "data", "test.db")})
+	databasePath := filepath.Join(t.TempDir(), "data", "test.db")
+	db, err := store.OpenDatabase(ctx, store.Config{Driver: driver, DSN: dsn, Path: databasePath})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +77,7 @@ func newFixture(t *testing.T, mode string, stop bool) *engineFixture {
 		t.Fatal(err)
 	}
 	t.Cleanup(engine.Close)
-	return &engineFixture{engine, db, vault, actor, targets, job}
+	return &engineFixture{databasePath, engine, db, vault, actor, targets, job}
 }
 
 func await(t *testing.T, condition func() bool) {

@@ -66,6 +66,9 @@ func TestControlStatusAndInputDoNotWaitForOutputReplay(t *testing.T) {
 	if err := f.h.store.SetRunHost(ctx, f.run.ID, f.host.ID, "interrupted", "", &code); err != nil {
 		t.Fatal(err)
 	}
+	if err := f.h.store.CompressRunOutput(ctx, f.run.ID, f.host.ID); err != nil {
+		t.Fatal(err)
+	}
 	if err := f.h.store.FinishRun(ctx, f.run.ID, "interrupted"); err != nil {
 		t.Fatal(err)
 	}

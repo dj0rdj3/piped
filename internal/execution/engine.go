@@ -51,19 +51,25 @@ type activeRun struct {
 }
 
 type Engine struct {
-	notifier         *notifications.Service
-	db               *store.Store
-	vault            *secrets.Vault
-	logger           *slog.Logger
-	ctx              context.Context
-	cancel           context.CancelFunc
-	mu               sync.Mutex
-	active           map[string]*activeRun
-	wg               sync.WaitGroup
-	now              func() time.Time
-	schedulerStarted bool
-	scheduleMinute   int64
-	runner           func(context.Context, store.Connection, string, io.Writer, func(io.WriteCloser), func(ssh.PublicKey) error) (*int, error)
+	notifier            *notifications.Service
+	db                  *store.Store
+	vault               *secrets.Vault
+	logger              *slog.Logger
+	ctx                 context.Context
+	cancel              context.CancelFunc
+	mu                  sync.Mutex
+	active              map[string]*activeRun
+	wg                  sync.WaitGroup
+	archiveReady        chan struct{}
+	maintenanceEstimate time.Duration
+	maintenanceMu       sync.Mutex
+	maintenanceCancel   context.CancelFunc
+	manualAdmissions    int
+	now                 func() time.Time
+	schedulerStarted    bool
+	scheduleMinute      int64
+	schedulePending     int // Guarded by mu; count overlapping batches, not just the newest minute.
+	runner              func(context.Context, store.Connection, string, io.Writer, func(io.WriteCloser), func(ssh.PublicKey) error) (*int, error)
 }
 
 func New(ctx context.Context, db *store.Store, vault *secrets.Vault, logger *slog.Logger, retentionDays int) (*Engine, error) {
@@ -77,13 +83,74 @@ func New(ctx context.Context, db *store.Store, vault *secrets.Vault, logger *slo
 	if err != nil {
 		return nil, err
 	}
+	reclaimer, err := db.NewSQLiteReclaimer(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("prepare SQLite space reclamation: %w", err)
+	}
 	if err := db.RecoverRuns(ctx); err != nil {
+		if reclaimer != nil {
+			reclaimer.Close()
+		}
 		return nil, err
 	}
 	ctx, cancel := context.WithCancel(ctx)
-	engine := &Engine{notifier: notifier, db: db, vault: vault, logger: logger, ctx: ctx, cancel: cancel, active: map[string]*activeRun{}, now: time.Now}
+	engine := &Engine{
+		notifier:            notifier,
+		db:                  db,
+		vault:               vault,
+		logger:              logger,
+		ctx:                 ctx,
+		cancel:              cancel,
+		active:              map[string]*activeRun{},
+		archiveReady:        make(chan struct{}, 1),
+		maintenanceEstimate: store.ServerReclamationBudget,
+		now:                 time.Now,
+	}
 	engine.runner = engine.runSSH
-	engine.wg.Add(1)
+	if reclaimer != nil {
+		engine.wg.Add(1)
+		go func() {
+			defer engine.wg.Done()
+			defer reclaimer.Close()
+			timer := time.NewTimer(0)
+			defer timer.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-timer.C:
+				}
+				more, err := reclaimer.Step(ctx)
+				delay := time.Second
+				if err != nil && ctx.Err() == nil {
+					logger.Error("SQLite space reclamation failed", "error", err)
+					delay = time.Minute
+				} else if more {
+					delay = 50 * time.Millisecond
+				}
+				timer.Reset(delay)
+			}
+		}()
+	}
+	engine.wg.Add(2)
+	go func() {
+		defer engine.wg.Done()
+		retry := time.NewTicker(time.Minute)
+		defer retry.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-engine.archiveReady:
+			case <-retry.C:
+			}
+			if err := db.CompressCompletedOutput(ctx); err != nil && ctx.Err() == nil {
+				logger.Error("execution log compression failed", "error", err)
+			}
+			engine.reclaimServerOutput()
+
+		}
+	}()
 	go func() {
 		defer engine.wg.Done()
 		ticker := time.NewTicker(time.Hour)
@@ -91,6 +158,12 @@ func New(ctx context.Context, db *store.Store, vault *secrets.Vault, logger *slo
 		for {
 			if err := db.PurgeRuns(ctx, time.Now().AddDate(0, 0, -retentionDays).Unix()); err != nil && ctx.Err() == nil {
 				logger.Error("execution retention failed", "error", err)
+			}
+			// A single worker drains persisted completions. Coalesce wakeups rather
+			// than allocating another goroutine or queued ID for every finished host.
+			select {
+			case engine.archiveReady <- struct{}{}:
+			default:
 			}
 			select {
 			case <-ctx.Done():
@@ -106,8 +179,9 @@ func New(ctx context.Context, db *store.Store, vault *secrets.Vault, logger *slo
 func (e *Engine) Done() <-chan struct{} { return e.ctx.Done() }
 
 func (e *Engine) Close() {
-	e.mu.Lock()
+	// Cancel maintenance before waiting for its admission lock.
 	e.cancel()
+	e.mu.Lock()
 	e.mu.Unlock()
 	e.wg.Wait()
 }
@@ -116,6 +190,22 @@ func (e *Engine) Start(ctx context.Context, actor store.Actor, jobID string, ver
 	if version < 1 {
 		return store.Run{}, ErrInput
 	}
+	// Validate authority before allowing a request to interrupt database work.
+	// CreateRun checks it again transactionally when admission is granted.
+	if err := e.db.Authorize(ctx, actor, store.ScopeRunsWrite); err != nil {
+		return store.Run{}, err
+	}
+	e.maintenanceMu.Lock()
+	e.manualAdmissions++
+	if e.maintenanceCancel != nil {
+		e.maintenanceCancel()
+	}
+	e.maintenanceMu.Unlock()
+	defer func() {
+		e.maintenanceMu.Lock()
+		e.manualAdmissions--
+		e.maintenanceMu.Unlock()
+	}()
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.ctx.Err() != nil {
@@ -202,6 +292,12 @@ func (e *Engine) execute(runID string, job store.Job, connections []store.Connec
 			e.logger.Error("execution state failed", "error", updateErr)
 			status = "failed"
 		}
+		if updateErr == nil {
+			select {
+			case e.archiveReady <- struct{}{}:
+			default:
+			}
+		}
 		if updateErr == nil && len(c.Notifications) > 0 {
 			e.wg.Add(1)
 			go func() {
@@ -233,6 +329,10 @@ func (e *Engine) execute(runID string, job store.Job, connections []store.Connec
 	e.mu.Lock()
 	delete(e.active, runID)
 	e.mu.Unlock()
+	select {
+	case e.archiveReady <- struct{}{}:
+	default:
+	}
 }
 
 type outputWriter struct {

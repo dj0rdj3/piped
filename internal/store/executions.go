@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"io"
 	"slices"
 	"time"
 
@@ -218,6 +219,17 @@ func (s *Store) AppendOutput(ctx context.Context, runID, hostID string, data []b
 		return err
 	}
 	defer tx.Rollback()
+	var finished int64
+	err = tx.QueryRowContext(ctx, `SELECT finished_at FROM run_hosts WHERE run_id = ? AND host_id = ?`, runID, hostID).Scan(&finished)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if finished != 0 {
+		return errors.New("cannot append output to a finished host")
+	}
 	for len(data) > 0 {
 		size := min(len(data), 4096)
 		if _, err := tx.ExecContext(ctx, `INSERT INTO run_output(run_id, host_id, data) VALUES (?, ?, ?)`, runID, hostID, data[:size]); err != nil {
@@ -236,20 +248,19 @@ func (s *Store) RunOutput(ctx context.Context, actor Actor, runID, hostID string
 	if err := s.authorizeRunOutput(ctx, actor, runID, hostID); err != nil {
 		return nil, err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id, data FROM run_output WHERE run_id = ? AND host_id = ? AND id > ? ORDER BY id LIMIT 16`, runID, hostID, after)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
+	reader := outputReader{store: s, ctx: ctx, runID: runID, hostID: hostID, cursor: after}
 	output := []OutputChunk{}
-	for rows.Next() {
-		var chunk OutputChunk
-		if err := rows.Scan(&chunk.ID, &chunk.Data); err != nil {
+	for len(output) < 16 {
+		chunk, err := reader.next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
 			return nil, err
 		}
 		output = append(output, chunk)
 	}
-	return output, rows.Err()
+	return output, nil
 }
 
 func (s *Store) authorizeRunOutput(ctx context.Context, actor Actor, runID, hostID string) error {
@@ -270,12 +281,8 @@ func (s *Store) RunOutputTail(ctx context.Context, actor Actor, runID, hostID st
 	if err := s.authorizeRunOutput(ctx, actor, runID, hostID); err != nil {
 		return nil, false, err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id, data FROM run_output WHERE run_id = ? AND host_id = ? ORDER BY id DESC`, runID, hostID)
-	if err != nil {
-		return nil, false, err
-	}
-	defer rows.Close()
-	return outputPage(rows, 0, 0)
+	reader := outputReader{store: s, ctx: ctx, runID: runID, hostID: hostID, descending: true}
+	return outputPage(&reader, 0, 0)
 }
 
 var ErrOutputCursor = errors.New("invalid history cursor")
@@ -289,31 +296,32 @@ func (s *Store) RunOutputBefore(ctx context.Context, actor Actor, runID, hostID 
 	if err := s.authorizeRunOutput(ctx, actor, runID, hostID); err != nil {
 		return nil, false, err
 	}
-	comparison := "<"
-	if offset > 0 {
-		comparison = "<="
-	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id,data FROM run_output WHERE run_id = ? AND host_id = ? AND id `+comparison+` ? ORDER BY id DESC`, runID, hostID, before)
-	if err != nil {
-		return nil, false, err
-	}
-	defer rows.Close()
-	return outputPage(rows, before, offset)
+	reader := outputReader{store: s, ctx: ctx, runID: runID, hostID: hostID, cursor: before, descending: true, inclusive: offset > 0}
+	return outputPage(&reader, before, offset)
 }
 
 // Both initial tails and older pages have the same byte bound and return
 // ascending chunks. IDs and offsets refer to the immutable persisted bytes.
-func outputPage(rows *sql.Rows, prefixID int64, prefixBytes int) ([]OutputChunk, bool, error) {
+func outputPage(reader *outputReader, prefixID int64, prefixBytes int) ([]OutputChunk, bool, error) {
 	chunks := []OutputChunk{}
 	remaining := 256 * 1024
 	more := false
-	for rows.Next() {
+	for {
 		if remaining == 0 {
-			more = true
+			if !more {
+				var err error
+				more, err = reader.hasMore()
+				if err != nil {
+					return nil, false, err
+				}
+			}
 			break
 		}
-		var chunk OutputChunk
-		if err := rows.Scan(&chunk.ID, &chunk.Data); err != nil {
+		chunk, err := reader.next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
 			return nil, false, err
 		}
 		if chunk.ID == prefixID {
@@ -331,7 +339,7 @@ func outputPage(rows *sql.Rows, prefixID int64, prefixBytes int) ([]OutputChunk,
 		chunks = append(chunks, chunk)
 	}
 	slices.Reverse(chunks)
-	return chunks, more, rows.Err()
+	return chunks, more, nil
 }
 
 func (s *Store) TrustedHostKey(ctx context.Context, hostID, address string, port int) (string, error) {

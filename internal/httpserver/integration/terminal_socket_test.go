@@ -149,6 +149,10 @@ func TestTerminalSocketResumesPersistsAndFlushesFinalOutput(t *testing.T) {
 	if err := f.h.store.SetRunHost(context.Background(), f.run.ID, f.host.ID, "succeeded", "", &code); err != nil {
 		t.Fatal(err)
 	}
+	// Replace the source rows while this connection is replaying a live cursor.
+	if err := f.h.store.CompressRunOutput(context.Background(), f.run.ID, f.host.ID); err != nil {
+		t.Fatal(err)
+	}
 	if err := f.h.store.FinishRun(context.Background(), f.run.ID, "succeeded"); err != nil {
 		t.Fatal(err)
 	}

@@ -3,12 +3,81 @@
 package integration
 
 import (
+	"context"
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
 	"piped/internal/store"
 )
+
+func TestArchivedOutputThroughDevelopmentAPIAndMCP(t *testing.T) {
+	h := newHarness(t, false, true)
+	cookie := h.login(t, "admin", testPassword)
+	hostResponse := h.request("POST", "/api/hosts", hostBody(), cookie)
+	expect(t, hostResponse, 201)
+	host := responseHost(t, hostResponse)
+	jobResponse := h.request("POST", "/api/jobs", jobBody(host.ID), cookie)
+	expect(t, jobResponse, 201)
+	job := responseJob(t, jobResponse)
+	ctx := context.Background()
+	actor, err := h.auth.Resolve(ctx, cookie.Value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, _, _, err := h.store.CreateRun(ctx, actor, "archive-tools", job.ID, job.Version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 80 {
+		if err := h.store.AppendOutput(ctx, run.ID, host.ID, []byte("\xe2\x82\xac\r\n")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want, _, err := h.store.RunOutputTail(ctx, actor, run.ID, host.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.store.SetRunHost(ctx, run.ID, host.ID, "succeeded", "", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.store.CompressRunOutput(ctx, run.ID, host.ID); err != nil {
+		t.Fatal(err)
+	}
+	_, token := h.issueKey(t, store.ScopeRunsRead)
+	discovery := h.mcpRequest(t, token, "tools/list", map[string]any{})
+	encoded, _ := json.Marshal(discovery)
+	if !strings.Contains(string(encoded), `"read_run_output"`) {
+		t.Fatal("output tool missing from discovery")
+	}
+	path := "/api/development/v1/runs/" + run.ID + "/hosts/" + host.ID + "/output?tail=1"
+	response := h.bearerRequest("GET", path, token, nil, nil)
+	expect(t, response, 200)
+	var result struct {
+		Chunks []store.OutputChunk `json:"chunks"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil || !reflect.DeepEqual(result.Chunks, want) {
+		t.Fatalf("development API changed archived output: %v", err)
+	}
+	reply := h.mcpRequest(t, token, "tools/call", map[string]any{"name": "read_run_output", "arguments": map[string]any{"run_id": run.ID, "host_id": host.ID, "tail": true}})
+	encoded, err = json.Marshal(reply["result"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var toolResult struct {
+		IsError bool `json:"isError"`
+		Content []struct {
+			Text string `json:"text"`
+		} `json:"content"`
+	}
+	if err := json.Unmarshal(encoded, &toolResult); err != nil || toolResult.IsError || len(toolResult.Content) != 1 {
+		t.Fatalf("MCP read failed: %v", err)
+	}
+	if err := json.Unmarshal([]byte(toolResult.Content[0].Text), &result); err != nil || !reflect.DeepEqual(result.Chunks, want) {
+		t.Fatalf("MCP changed archived output: %v", err)
+	}
+}
 
 func TestExecutionDevelopmentScopesAndToolDiscovery(t *testing.T) {
 	h := newHarness(t, false, true)

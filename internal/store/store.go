@@ -27,6 +27,7 @@ var (
 
 type Store struct {
 	db             *database
+	sqliteDSN      string
 	runListenersMu sync.Mutex
 	runListeners   map[runWatchKey]map[chan struct{}]struct{}
 }
@@ -67,6 +68,7 @@ func Open(ctx context.Context, filename string) (*Store, error) {
 	}
 	u := url.URL{Scheme: "file", Path: abs}
 	q := u.Query()
+	q.Add("_pragma", "auto_vacuum(INCREMENTAL)")
 	q.Add("_pragma", "foreign_keys(1)")
 	q.Add("_pragma", "busy_timeout(5000)")
 	q.Add("_pragma", "journal_mode(WAL)")
@@ -80,7 +82,7 @@ func Open(ctx context.Context, filename string) (*Store, error) {
 	// A single connection serializes SQLite writes for this small-team workload.
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
-	s := &Store{db: &database{DB: db, dialect: "sqlite"}}
+	s := &Store{db: &database{DB: db, dialect: "sqlite"}, sqliteDSN: u.String()}
 	if err := db.PingContext(ctx); err != nil {
 		db.Close()
 		return nil, err
