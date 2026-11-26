@@ -1,6 +1,7 @@
+import { useJobDraft } from '../jobs/useJobDraft.js';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mountComponent, deferred, settle } from '../../../test-support/component.js';
+import { mountModel, mountComponent, deferred, settle } from '../../../test-support/component.js';
 
 const target = {
   id: 'target',
@@ -90,7 +91,7 @@ test('webhook dirty state tracks form changes and ignores secret row identities'
 test('new jobs preselect enabled defaults while edits and copies retain their selections', async (t) => {
   for (const mode of ['create', 'edit', 'duplicate']) {
     const calls = [];
-    const fixture = await mountComponent('features/jobs/JobDialog.vue', {
+    const fixture = await mountModel(useJobDraft, {
       props: {
         mode,
         target:

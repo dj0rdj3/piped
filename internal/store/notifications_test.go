@@ -34,7 +34,8 @@ func TestJobNotificationDefaultsPreservationAndSnapshot(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(job.NotificationTargetIDs, []string{"default"}) {
 		t.Fatalf("omission lost selection: %+v %v", job, err)
 	}
-	_, _, connections, err := db.CreateRun(ctx, actor, "snapshot-notifications", job.ID, job.Version)
+	connectionsAdmission, err := db.AdmitRun(ctx, actor, RunAdmission{ID: "snapshot-notifications", RequestID: "snapshot-notifications", JobID: job.ID, Version: job.Version})
+	connections := connectionsAdmission.(CreatedRun).Connections
 	if err != nil || len(connections) == 0 || len(connections[0].Notifications) != 1 || !bytes.Equal(connections[0].Notifications[0].Secrets[0].Ciphertext, []byte("encrypted-default")) {
 		t.Fatalf("snapshot: %v", err)
 	}
@@ -46,7 +47,8 @@ func TestJobNotificationDefaultsPreservationAndSnapshot(t *testing.T) {
 	if !connections[0].Notifications[0].Enabled {
 		t.Fatal("target edit mutated snapshot")
 	}
-	_, _, next, err := db.CreateRun(ctx, actor, "disabled-notifications", job.ID, job.Version)
+	nextAdmission, err := db.AdmitRun(ctx, actor, RunAdmission{ID: "disabled-notifications", RequestID: "disabled-notifications", JobID: job.ID, Version: job.Version})
+	next := nextAdmission.(CreatedRun).Connections
 	if err != nil || len(next[0].Notifications) != 0 {
 		t.Fatalf("disabled target delivered: %v", err)
 	}
@@ -93,7 +95,9 @@ func TestJobNotificationDefaultsPreservationAndSnapshot(t *testing.T) {
 func TestNotificationOutputTailIncludesSmallChunksAndIsBounded(t *testing.T) {
 	db, actor, job := scheduledJobFixture(t)
 	ctx := context.Background()
-	run, _, connections, err := db.CreateRun(ctx, actor, "tail", job.ID, job.Version)
+	runAdmission, err := db.AdmitRun(ctx, actor, RunAdmission{ID: "tail", RequestID: "tail", JobID: job.ID, Version: job.Version})
+	run := runAdmission.PublicRun()
+	connections := runAdmission.(CreatedRun).Connections
 	if err != nil {
 		t.Fatal(err)
 	}

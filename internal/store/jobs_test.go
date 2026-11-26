@@ -59,7 +59,8 @@ func TestMissingJobHostsRollBackCreationEditsAndCopies(t *testing.T) {
 			}
 		})
 	}
-	_, _, connections, err := db.CreateRun(ctx, actor, "snapshot", original.ID, original.Version)
+	connectionsAdmission, err := db.AdmitRun(ctx, actor, RunAdmission{ID: "snapshot", RequestID: "snapshot", JobID: original.ID, Version: original.Version})
+	connections := connectionsAdmission.(CreatedRun).Connections
 	if err != nil || len(connections) != 2 || len(connections[0].JobSecrets) != 1 {
 		t.Fatalf("original job was not executable after rejected writes: %v", err)
 	}

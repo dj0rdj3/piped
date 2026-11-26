@@ -32,6 +32,25 @@ export async function mountComponent(
   const component = new Function(...Object.keys(bindings), `${source}\nreturn component;`)(
     ...Object.values(bindings),
   );
+  return mountDefinition(component, { props, prepare });
+}
+
+export function mountModel(factory, { props = {}, request, browser = {}, prepare } = {}) {
+  const events = [];
+  const component = {
+    setup() {
+      return factory(
+        props,
+        (...args) => events.push(args),
+        request,
+        Object.assign(Object.create(globalThis), browser),
+      );
+    },
+  };
+  return { ...mountDefinition(component, { props, prepare }), events };
+}
+
+function mountDefinition(component, { props, prepare }) {
   const events = [];
   const listeners = Object.fromEntries(
     (component.emits ?? []).map((name) => [

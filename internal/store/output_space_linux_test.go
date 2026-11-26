@@ -92,7 +92,7 @@ func TestOutputArchiveSQLiteSpaceUsage(t *testing.T) {
 			}
 			writeRun := func(id string) {
 				t.Helper()
-				if _, _, _, err := db.CreateRun(ctx, actor, id, job.ID, job.Version); err != nil {
+				if _, err := db.AdmitRun(ctx, actor, RunAdmission{ID: id, RequestID: id, JobID: job.ID, Version: job.Version}); err != nil {
 					t.Fatal(err)
 				}
 				for offset := 0; offset < len(data); offset += MaxOutputBatchBytes {

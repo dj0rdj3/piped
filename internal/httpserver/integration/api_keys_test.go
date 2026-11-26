@@ -211,10 +211,10 @@ func TestProductionAPIResourceLifecycleAndExecutionScope(t *testing.T) {
 		t.Fatal("job API exposed a secret")
 	}
 	expect(t, h.bearerRequest("GET", "/api/v1/hosts", token, nil, nil), 200)
-	expect(t, h.bearerRequest("POST", "/api/v1/jobs/"+job.Job.ID+"/run", token, map[string]int64{"version": job.Job.Version}, nil), 403)
+	expect(t, h.bearerRequest("POST", "/api/v1/jobs/"+job.Job.ID+"/run", token, map[string]any{"version": job.Job.Version, "request_id": "fixture-intent"}, nil), 403)
 	expect(t, h.bearerRequest("GET", "/api/v1/jobs/"+job.Job.ID+"/runs", token, nil, nil), 403)
-	expect(t, h.bearerRequest("DELETE", "/api/v1/jobs/"+job.Job.ID, token, map[string]int64{"version": job.Job.Version}, nil), 204)
-	expect(t, h.bearerRequest("DELETE", "/api/v1/hosts/"+host.Host.ID, token, map[string]int64{"version": host.Host.Version}, nil), 204)
+	expect(t, h.bearerRequest("DELETE", "/api/v1/jobs/"+job.Job.ID, token, map[string]any{"version": job.Job.Version}, nil), 204)
+	expect(t, h.bearerRequest("DELETE", "/api/v1/hosts/"+host.Host.ID, token, map[string]any{"version": host.Host.Version}, nil), 204)
 	expect(t, h.bearerRequest("DELETE", "/api/v1/credentials/"+credential.Credential.ID, token, nil, nil), 204)
 }
 

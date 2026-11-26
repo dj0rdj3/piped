@@ -79,13 +79,13 @@ func TestCredentialAuthenticationAndCSRF(t *testing.T) {
 		}
 		expect(t, h.request(method, path, map[string]string{}, nil), 401)
 
-		r := httptest.NewRequest(method, path, strings.NewReader(`{}`))
+		r := httptest.NewRequest(method, h.origin+path, strings.NewReader(`{}`))
 		r.AddCookie(cookie)
 		r.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 		h.handler.ServeHTTP(w, r)
 		expect(t, w, 403)
-		r = httptest.NewRequest(method, path, strings.NewReader(`{}`))
+		r = httptest.NewRequest(method, h.origin+path, strings.NewReader(`{}`))
 		r.AddCookie(cookie)
 		r.Header.Set("X-Piped-Request", "1")
 		r.Header.Set("Origin", "https://untrusted.example")
@@ -147,7 +147,7 @@ func TestCredentialRequestValidation(t *testing.T) {
 	h := newHarness(t, false)
 	cookie := h.login(t, "admin", testPassword)
 	for _, raw := range []string{`{"unknown":"value"}`, `{} {}`, `{"private_key":"` + strings.Repeat("a", 66000) + `"}`, `{"mode":1}`, `[]`} {
-		r := httptest.NewRequest("POST", "/api/credentials", strings.NewReader(raw))
+		r := httptest.NewRequest("POST", h.origin+"/api/credentials", strings.NewReader(raw))
 		r.AddCookie(cookie)
 		r.Header.Set("Content-Type", "application/json")
 		r.Header.Set("X-Piped-Request", "1")

@@ -41,7 +41,8 @@ func newTerminalFixture(t *testing.T) *terminalFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	run, _, _, err := h.store.CreateRun(context.Background(), actor, "socket-fixture", job.ID, job.Version)
+	runAdmission, err := h.store.AdmitRun(context.Background(), actor, store.RunAdmission{ID: "socket-fixture", RequestID: "socket-fixture", JobID: job.ID, Version: job.Version})
+	run := runAdmission.PublicRun()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +59,7 @@ func (f *terminalFixture) dial(t *testing.T, after int64) *websocket.Conn {
 	headers := http.Header{"Origin": []string{f.h.origin}, "Cookie": []string{f.cookie.String()}}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	conn, _, err := websocket.Dial(ctx, f.path(after), &websocket.DialOptions{HTTPHeader: headers})
+	conn, _, err := websocket.Dial(ctx, f.path(after), &websocket.DialOptions{Host: strings.TrimPrefix(f.h.origin, "http://"), HTTPHeader: headers})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +147,7 @@ func TestTerminalSocketOriginSessionAndHostChecks(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 			defer cancel()
-			conn, response, err := websocket.Dial(ctx, tc.path, &websocket.DialOptions{HTTPHeader: http.Header{"Origin": []string{tc.origin}, "Cookie": []string{tc.cookie}}})
+			conn, response, err := websocket.Dial(ctx, tc.path, &websocket.DialOptions{Host: strings.TrimPrefix(f.h.origin, "http://"), HTTPHeader: http.Header{"Origin": []string{tc.origin}, "Cookie": []string{tc.cookie}}})
 			if conn != nil {
 				conn.CloseNow()
 			}
@@ -330,7 +331,7 @@ func TestTerminalSocketLimitsConcurrentConnections(t *testing.T) {
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 			defer cancel()
-			_, response, err := websocket.Dial(ctx, f.path(0)+"&channel="+channel, &websocket.DialOptions{HTTPHeader: http.Header{"Origin": []string{f.h.origin}, "Cookie": []string{f.cookie.String()}}})
+			_, response, err := websocket.Dial(ctx, f.path(0)+"&channel="+channel, &websocket.DialOptions{Host: strings.TrimPrefix(f.h.origin, "http://"), HTTPHeader: http.Header{"Origin": []string{f.h.origin}, "Cookie": []string{f.cookie.String()}}})
 			if err == nil || response == nil || response.StatusCode != 429 {
 				t.Fatal("connection bound ignored")
 			}

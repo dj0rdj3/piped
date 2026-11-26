@@ -151,7 +151,7 @@ func TestCompletionPersistenceRetriesWithoutReplayingScripts(t *testing.T) {
 				t.Fatal("did not exercise failed completion persistence")
 			}
 			future := time.Now().Truncate(time.Minute).Add(2 * time.Minute)
-			_, _, _, err = f.db.CreateScheduledRun(context.Background(), "blocked-overlap", job.ID, job.Version, future.Unix(), func() time.Time { return future })
+			_, err = f.db.CreateScheduledRun(context.Background(), "blocked-overlap", job.ID, job.Version, future.Unix(), func() time.Time { return future })
 			if !errors.Is(err, store.ErrScheduleSkipped) {
 				t.Fatal("pending completion allowed scheduled overlap", err)
 			}
@@ -172,7 +172,7 @@ func TestCompletionPersistenceRetriesWithoutReplayingScripts(t *testing.T) {
 				}
 			}
 			future = future.Add(time.Minute)
-			if _, _, _, err := f.db.CreateScheduledRun(context.Background(), "next-occurrence", job.ID, job.Version, future.Unix(), func() time.Time { return future }); err != nil {
+			if _, err := f.db.CreateScheduledRun(context.Background(), "next-occurrence", job.ID, job.Version, future.Unix(), func() time.Time { return future }); err != nil {
 				t.Fatal("recovered completion still blocks scheduling", err)
 			}
 		})
@@ -338,7 +338,7 @@ func TestCancellationAndShutdownFlushMaskedOutputTail(t *testing.T) {
 				f.engine.Close()
 			} else {
 				for _, host := range f.hosts {
-					if err := f.engine.Cancel(context.Background(), f.actor, run.ID, host.ID); err != nil {
+					if err := f.engine.Cancel(context.Background(), f.actor, HostRequest{RunID: run.ID, HostID: host.ID}); err != nil {
 						t.Fatal(err)
 					}
 				}

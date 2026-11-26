@@ -5,14 +5,16 @@ import (
 	"database/sql"
 	"errors"
 	"time"
+
+	"piped/internal/problem"
 )
 
 var (
-	ErrJobName    = errors.New("job name already exists")
-	ErrJobChanged = errors.New("job changed; refresh and try again")
-	ErrJobHost    = errors.New("a selected host no longer exists; refresh and try again")
-	ErrHostInUse  = errors.New("host is assigned to a job; remove it from the job first")
-	ErrJobTargets = errors.New("job targets must match between 1 and 1000 hosts")
+	ErrJobName    = problem.New(problem.Conflict, "job name already exists")
+	ErrJobChanged = problem.New(problem.Conflict, "job changed; refresh and try again")
+	ErrJobHost    = problem.New(problem.Invalid, "a selected host no longer exists; refresh and try again")
+	ErrHostInUse  = problem.New(problem.Conflict, "host is assigned to a job; remove it from the job first")
+	ErrJobTargets = problem.New(problem.Invalid, "job targets must match between 1 and 1000 hosts")
 )
 
 const MaxJobHosts = 1000
@@ -69,7 +71,15 @@ func (s *Store) Jobs(ctx context.Context, actor Actor) ([]Job, error) {
 		return nil, err
 	}
 	defer tx.Rollback()
-	rows, err := tx.QueryContext(ctx, `SELECT `+jobColumns+` FROM jobs ORDER BY lower(name), name`)
+	jobs, err := readJobs(ctx, tx, actor, nil)
+	if err != nil {
+		return nil, err
+	}
+	return jobs, tx.Commit()
+}
+
+func readJobs(ctx context.Context, tx *authorizedTransaction, actor Actor, ids []string) ([]Job, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT `+jobColumns+` FROM jobs`+listIDFilter("id", ids)+` ORDER BY lower(name), name`, listIDArgs(ids)...)
 	if err != nil {
 		return nil, err
 	}
@@ -91,12 +101,12 @@ func (s *Store) Jobs(ctx context.Context, actor Actor) ([]Job, error) {
 		return nil, err
 	}
 	// Read ordered public relation values together, without loading ciphertext.
-	rows, err = tx.QueryContext(ctx, `SELECT job_id, host_id AS value, 'host' AS kind, position AS sort_order FROM job_hosts
+	rows, err = tx.QueryContext(ctx, `SELECT * FROM (SELECT job_id, host_id AS value, 'host' AS kind, position AS sort_order FROM job_hosts
 		UNION ALL SELECT job_id, tag, 'tag', 0 FROM job_host_tags
 		UNION ALL SELECT job_id, host_id, 'exclusion', 0 FROM job_host_exclusions
 		UNION ALL SELECT job_id, name, 'secret', 0 FROM job_secrets
 		UNION ALL SELECT job_id, target_id, 'notification', 0 FROM job_notification_targets
-		ORDER BY kind, job_id, sort_order, value`)
+		) relations`+listIDFilter("job_id", ids)+` ORDER BY kind, job_id, sort_order, value`, listIDArgs(ids)...)
 	if err != nil {
 		return nil, err
 	}
@@ -132,7 +142,7 @@ func (s *Store) Jobs(ctx context.Context, actor Actor) ([]Job, error) {
 			FROM jobs j JOIN runs r ON r.run_sequence = (
 				SELECT recent.run_sequence FROM runs recent WHERE recent.job_id = j.id
 				ORDER BY recent.started_at DESC, recent.run_sequence DESC LIMIT 1
-			)`)
+			)`+listIDFilter("j.id", ids), listIDArgs(ids)...)
 		if err != nil {
 			return nil, err
 		}
@@ -154,7 +164,7 @@ func (s *Store) Jobs(ctx context.Context, actor Actor) ([]Job, error) {
 	} else if !errors.Is(err, ErrForbidden) {
 		return nil, err
 	}
-	return jobs, tx.Commit()
+	return jobs, nil
 }
 
 // SaveJob atomically checks authorization, the current version, and all target
@@ -284,6 +294,9 @@ func (s *Store) saveJob(ctx context.Context, actor Actor, job Job, secretChanges
 	if err != nil {
 		return Job{}, err
 	}
+	if err := refreshListEntry(ctx, tx, "jobs", job.ID); err != nil {
+		return Job{}, err
+	}
 	return job, tx.Commit()
 }
 
@@ -305,6 +318,9 @@ func (s *Store) DeleteJob(ctx context.Context, actor Actor, id string, version i
 		return ErrJobChanged
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM jobs WHERE id = ?`, id); err != nil {
+		return err
+	}
+	if err := refreshListEntry(ctx, tx, "jobs", id); err != nil {
 		return err
 	}
 	return tx.Commit()

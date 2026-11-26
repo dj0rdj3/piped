@@ -198,7 +198,7 @@ func TestUsersConstraintsAndCascade(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	users, err := s.Users(ctx)
+	users, err := s.Users(ctx, a)
 	if err != nil || len(users) != 2 {
 		t.Fatalf("user metadata listing failed: %v", err)
 	}

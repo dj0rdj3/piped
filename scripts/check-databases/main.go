@@ -35,6 +35,14 @@ type result struct {
 	Version string `json:"version,omitempty"`
 	Digest  string `json:"digest,omitempty"`
 	Result  string `json:"result"`
+	Tests   string `json:"tests,omitempty"`
+}
+
+type checkLimits struct {
+	memory   string
+	cpus     string
+	parallel int
+	tests    string
 }
 
 func main() {
@@ -47,7 +55,14 @@ func main() {
 func run() error {
 	report := flag.String("report", ".cache/database-checks.json", "JSON report path")
 	startup := flag.Duration("startup-timeout", 3*time.Minute, "database startup deadline")
+	memory := flag.String("memory", "1g", "per-container memory and tmpfs limit")
+	cpus := flag.String("cpus", "2", "per-container CPU limit")
+	parallel := flag.Int("parallel", 2, "Go package and test parallelism")
+	tests := flag.String("run", "", "optional Go test name pattern for focused regressions")
 	flag.Parse()
+	if *parallel < 1 || *memory == "" || *cpus == "" {
+		return errors.New("resource limits and positive test parallelism are required")
+	}
 	images := flag.Args()
 	if len(images) == 0 {
 		images = defaultImages
@@ -65,10 +80,10 @@ func run() error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		checked, err := checkImage(ctx, image, directory, *startup)
+		checked, err := checkImage(ctx, image, directory, *startup, checkLimits{memory: *memory, cpus: *cpus, parallel: *parallel, tests: *tests})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "FAIL %s: %v\n", image, err)
-			checked = result{Image: image, Result: "failed"}
+			checked = result{Image: image, Result: "failed", Tests: *tests}
 			failed = true
 		}
 		results = append(results, checked)
@@ -105,7 +120,7 @@ func randomHex(size int) string {
 	return hex.EncodeToString(data)
 }
 
-func checkImage(ctx context.Context, image, directory string, startup time.Duration) (result, error) {
+func checkImage(ctx context.Context, image, directory string, startup time.Duration, limits checkLimits) (result, error) {
 	driver, _, valid := strings.Cut(image, ":")
 	if !valid || (driver != "postgres" && driver != "mysql" && driver != "mariadb") {
 		return result{}, errors.New("use official postgres, mysql, or mariadb image tags")
@@ -153,7 +168,8 @@ func checkImage(ctx context.Context, image, directory string, startup time.Durat
 		}
 	}()
 	if _, err := execute(ctx, nil, "docker", "run", "--detach", "--rm", "--name", container,
-		"--env-file", envFile, "--publish", "127.0.0.1::"+port, "--tmpfs", dataPath+":rw", image); err != nil {
+		"--memory", limits.memory, "--memory-swap", limits.memory, "--cpus", limits.cpus,
+		"--env-file", envFile, "--publish", "127.0.0.1::"+port, "--tmpfs", dataPath+":rw,size="+limits.memory, image); err != nil {
 		return result{}, err
 	}
 	mapping, err := execute(ctx, nil, "docker", "port", container, port+"/tcp")
@@ -204,7 +220,10 @@ func checkImage(ctx context.Context, image, directory string, startup time.Durat
 	testEnvironment = append(testEnvironment, "CGO_ENABLED=0", "GOPATH="+filepath.Join(working, ".cache/go"),
 		"GOCACHE="+filepath.Join(working, ".cache/go-build"), "PIPED_TEST_DATABASE_CONFIG="+configFile)
 	for _, profile := range [][]string{nil, {"-tags", "development"}} {
-		arguments := append([]string{"test", "-count=1", "-timeout=5m"}, profile...)
+		arguments := append([]string{"test", "-count=1", "-timeout=8m", "-p=" + fmt.Sprint(limits.parallel), "-parallel=" + fmt.Sprint(limits.parallel)}, profile...)
+		if limits.tests != "" {
+			arguments = append(arguments, "-run", limits.tests)
+		}
 		arguments = append(arguments, "./internal/...")
 		output, err := execute(ctx, testEnvironment, "go", arguments...)
 		if err != nil {
@@ -221,5 +240,5 @@ func checkImage(ctx context.Context, image, directory string, startup time.Durat
 		return result{}, err
 	}
 	fmt.Printf("PASS %s: %s\n", image, version)
-	return result{Image: image, Version: version, Digest: digest, Result: "passed"}, nil
+	return result{Image: image, Version: version, Digest: digest, Result: "passed", Tests: limits.tests}, nil
 }

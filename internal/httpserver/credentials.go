@@ -1,32 +1,15 @@
 package httpserver
 
 import (
-	"encoding/hex"
 	"net/http"
-	"strings"
 
 	"piped/internal/credentials"
 	"piped/internal/httpserver/response"
 	"piped/internal/store"
 )
 
-func credentialID(r *http.Request) (string, error) {
-	id := r.PathValue("id")
-	decoded, err := hex.DecodeString(id)
-	if err != nil || len(decoded) != 16 {
-		return "", response.Fail(400, "invalid credential ID")
-	}
-	return id, nil
-}
-
 func (s *Server) listCredentials(w http.ResponseWriter, r *http.Request, actor store.Actor) error {
-	items, err := s.config.Credentials.List(r.Context(), actor)
-	if err != nil {
-		return response.CredentialFailure(err)
-	}
-	return listResponse(w, r, "credentials", items, func(item store.Credential) listEntry {
-		return listEntry{id: item.ID, name: item.Name, search: strings.Join([]string{item.Name, item.Fingerprint, item.Algorithm}, " ")}
-	}, nil)
+	return listResponse(w, r, actor, "credentials", s.auth.Store.CredentialsPage, nil)
 }
 
 func (s *Server) createCredential(w http.ResponseWriter, r *http.Request, actor store.Actor) error {
@@ -48,10 +31,7 @@ func (s *Server) createCredential(w http.ResponseWriter, r *http.Request, actor 
 }
 
 func (s *Server) renameCredential(w http.ResponseWriter, r *http.Request, actor store.Actor) error {
-	id, err := credentialID(r)
-	if err != nil {
-		return err
-	}
+	id := r.PathValue("id")
 	var body struct {
 		Name string `json:"name"`
 	}
@@ -66,10 +46,7 @@ func (s *Server) renameCredential(w http.ResponseWriter, r *http.Request, actor 
 }
 
 func (s *Server) deleteCredential(w http.ResponseWriter, r *http.Request, actor store.Actor) error {
-	id, err := credentialID(r)
-	if err != nil {
-		return err
-	}
+	id := r.PathValue("id")
 	var body struct{}
 	if err := response.Decode(w, r, &body); err != nil {
 		return err

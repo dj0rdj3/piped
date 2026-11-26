@@ -8,13 +8,14 @@ import (
 	"encoding/hex"
 	"errors"
 	"net/url"
+	"piped/internal/lifecycle"
+	"piped/internal/problem"
 	"sync"
 	"sync/atomic"
-	"time"
 )
 
 var ErrExecutionOwned = errors.New("another Piped server owns this database")
-var ErrExecutionOwnershipLost = errors.New("execution database ownership was lost")
+var ErrExecutionOwnershipLost = problem.New(problem.Unavailable, "execution database ownership was lost")
 
 type executionOwnerContextKey struct{}
 
@@ -36,7 +37,7 @@ type ExecutionOwner struct {
 }
 
 func (s *Store) AcquireExecutionOwner(ctx context.Context) (*ExecutionOwner, error) {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, lifecycle.StorageTimeout)
 	defer cancel()
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -56,26 +57,19 @@ func (s *Store) AcquireExecutionOwner(ctx context.Context) (*ExecutionOwner, err
 	if err != nil {
 		return nil, errors.New("acquire execution ownership connection failed")
 	}
-	unlock := `SELECT pg_advisory_unlock(7069706565)`
-	if s.db.dialect != "postgres" {
-		unlock = `SELECT RELEASE_LOCK(SHA2(CONCAT(DATABASE(), '.piped.execution'), 256))`
-	}
+	protocol := s.db.adapter().owner
 	owner := &ExecutionOwner{database: s.db, connection: conn, lost: make(chan struct{}), release: func() error {
 		// Confirm healthy shutdown releases ownership before the next server
 		// starts. The deadline also covers an unresponsive or lost session.
-		cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		_, _ = conn.ExecContext(cleanup, unlock)
+		cleanup, cancel := context.WithTimeout(context.Background(), lifecycle.StorageTimeout)
+		_, _ = conn.ExecContext(cleanup, protocol.release)
 		cancel()
 		// Discarding closes the actual connection and releases its session locks,
 		// including after an ambiguous acquisition or a failed health check.
 		return discardOwnershipConnection(conn)
 	}}
 	var acquired bool
-	query := `SELECT pg_try_advisory_lock(7069706565)`
-	if s.db.dialect != "postgres" {
-		query = `SELECT GET_LOCK(SHA2(CONCAT(DATABASE(), '.piped.execution'), 256), 0)`
-	}
-	if err := conn.QueryRowContext(ctx, query).Scan(&acquired); err != nil {
+	if err := conn.QueryRowContext(ctx, protocol.acquire).Scan(&acquired); err != nil {
 		owner.Close()
 		return nil, errors.New("acquire execution ownership failed")
 	}
@@ -83,11 +77,7 @@ func (s *Store) AcquireExecutionOwner(ctx context.Context) (*ExecutionOwner, err
 		owner.Close()
 		return nil, ErrExecutionOwned
 	}
-	identity := `SELECT pg_backend_pid()`
-	if s.db.dialect != "postgres" {
-		identity = `SELECT CONNECTION_ID()`
-	}
-	if err := conn.QueryRowContext(ctx, identity).Scan(&owner.sessionID); err != nil {
+	if err := conn.QueryRowContext(ctx, protocol.identity).Scan(&owner.sessionID); err != nil {
 		owner.Close()
 		return nil, errors.New("read execution ownership session failed")
 	}
@@ -109,7 +99,7 @@ func (o *ExecutionOwner) lose() error {
 // execution writes. A takeover cannot pass a previously validated transaction.
 // Return whether unfinished work needs the old controller's bounded drain time.
 func (o *ExecutionOwner) Claim(ctx context.Context) (bool, error) {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, lifecycle.StorageTimeout)
 	defer cancel()
 	tx, err := o.database.BeginTx(ctx, nil)
 	if err != nil {
@@ -142,7 +132,7 @@ func (o *ExecutionOwner) Claim(ctx context.Context) (bool, error) {
 	return active, nil
 }
 
-func (o *ExecutionOwner) checkSession(ctx context.Context, tx *transaction) error {
+func (o *ExecutionOwner) checkSession(ctx context.Context, tx writeTransaction) error {
 	if o.closed.Load() {
 		return o.lose()
 	}
@@ -150,12 +140,7 @@ func (o *ExecutionOwner) checkSession(ctx context.Context, tx *transaction) erro
 		return nil
 	}
 	var held bool
-	query := `SELECT EXISTS(SELECT 1 FROM pg_locks WHERE locktype = 'advisory'
-		AND pid = ? AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
-		AND classid::bigint * 4294967296 + objid::bigint = 7069706565)`
-	if o.database.dialect != "postgres" {
-		query = `SELECT COALESCE(IS_USED_LOCK(SHA2(CONCAT(DATABASE(), '.piped.execution'), 256)), 0) = ?`
-	}
+	query := o.database.adapter().owner.held
 	if err := tx.QueryRowContext(ctx, query, o.sessionID).Scan(&held); err != nil {
 		return err
 	}

@@ -1,10 +1,35 @@
 # Project working rules
 
-Read `REQUIREMENTS.md` before making changes. It records the agreed scope, security
-requirements, dependency approvals, and subsequent user decisions.
+Read `REQUIREMENTS.md` before making changes. It records the effective scope,
+security requirements and dependency approvals. Historical rationale is in
+`docs/DECISIONS.md`; deployment and recovery procedures are in `docs/OPERATIONS.md`.
+
+## Secure software development
+
+Build, maintain and improve secure software. Prioritize prevention, detection and
+remediation within the project scope defined in `REQUIREMENTS.md`.
+
+- Authorized security work covers local source repositories, applications owned by
+  the developer, their dependencies, and local development and test environments.
+  Do not access systems outside this scope or perform destructive operations.
+- Follow OWASP secure coding practices. Review authentication, authorization, input
+  validation, output encoding, secrets management, encryption, session management
+  and configuration. Identify injection vulnerabilities and check dependencies for
+  known vulnerabilities.
+- When a vulnerability is identified:
+  1. Explain the vulnerability, its potential impact and the affected source files.
+  2. Implement a secure correction.
+  3. Add regression tests for the security defect.
+  4. Verify that the correction works and the regression tests reject the faulty behavior.
 
 ## Code quality
 
+- Reassess the design before each change: choose the simplest approach that fully
+  meets the requirements using current standards and established best practices.
+  Verify changeable technical guidance against authoritative sources. Do not copy
+  an existing pattern without checking whether it is still appropriate. Explain
+  material tradeoffs, and never take shortcuts merely to finish sooner or weaken
+  security, correctness, stability, or required verification.
 - Keep production and development builds CGO-free (`CGO_ENABLED=0`), including all
   future database drivers and dependencies. CGO is permitted only for race tests.
 
@@ -59,8 +84,8 @@ requirements, dependency approvals, and subsequent user decisions.
   and `/api/development/v1` for direct HTTP checks or operations not available through a connected tool.
   If a tool connection is unavailable, use the authenticated local endpoint or app controls.
 - Create and manage test records through these interfaces instead of editing SQLite directly,
-  so application validation, authorization, and encryption are exercised. Use temporary
-  fixtures for destructive checks and clean up records created for testing.
+  so application validation, authorization, and encryption are exercised. Isolate checks
+  that could affect stored data in temporary fixtures and clean up records created for testing.
 - Verify affected MCP, WebMCP, or API behavior when changing features they expose, alongside
   the appropriate lint and automated checks. Use browser controls when verifying rendering
   or interactions requires them. Do not invoke unrelated mutations just to exercise a tool.

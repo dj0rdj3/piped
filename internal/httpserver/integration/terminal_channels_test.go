@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -17,7 +18,7 @@ func (f *terminalFixture) dialChannel(t *testing.T, kind string) *websocket.Conn
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	conn, _, err := websocket.Dial(ctx, f.path(0)+"&channel="+kind, &websocket.DialOptions{HTTPHeader: http.Header{"Origin": []string{f.h.origin}, "Cookie": []string{f.cookie.String()}}})
+	conn, _, err := websocket.Dial(ctx, f.path(0)+"&channel="+kind, &websocket.DialOptions{Host: strings.TrimPrefix(f.h.origin, "http://"), HTTPHeader: http.Header{"Origin": []string{f.h.origin}, "Cookie": []string{f.cookie.String()}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -260,7 +261,7 @@ func TestCompletedOutputChannelStillServesOlderHistory(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	conn, _, err := websocket.Dial(ctx, f.path(chunks[len(chunks)-1].ID)+"&channel=output", &websocket.DialOptions{HTTPHeader: http.Header{"Origin": []string{f.h.origin}, "Cookie": []string{f.cookie.String()}}})
+	conn, _, err := websocket.Dial(ctx, f.path(chunks[len(chunks)-1].ID)+"&channel=output", &websocket.DialOptions{Host: strings.TrimPrefix(f.h.origin, "http://"), HTTPHeader: http.Header{"Origin": []string{f.h.origin}, "Cookie": []string{f.cookie.String()}}})
 	if err != nil {
 		t.Fatal(err)
 	}

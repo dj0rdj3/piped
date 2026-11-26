@@ -80,7 +80,7 @@ func pendingStartupFixture(t *testing.T, address string) startupFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, _, err := db.CreateRun(ctx, fixture.actor, "unfinished", fixture.job.ID, fixture.job.Version); err != nil {
+	if _, err := db.AdmitRun(ctx, fixture.actor, store.RunAdmission{ID: "unfinished", RequestID: "unfinished-fixture", JobID: fixture.job.ID, Version: fixture.job.Version}); err != nil {
 		t.Fatal(err)
 	}
 	return fixture

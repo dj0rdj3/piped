@@ -58,9 +58,9 @@ func JobFailure(err error) error {
 
 func ExecutionFailure(err error) error {
 	switch {
-	case errors.Is(err, execution.ErrInactive), errors.Is(err, execution.ErrApproval), errors.Is(err, store.ErrRunActive):
+	case errors.Is(err, execution.ErrInactive), errors.Is(err, execution.ErrApproval), errors.Is(err, store.ErrRunActive), errors.Is(err, store.ErrAdmissionConflict):
 		return Fail(409, err.Error())
-	case errors.Is(err, execution.ErrInput):
+	case errors.Is(err, execution.ErrInput), errors.Is(err, execution.ErrOutputCursor), errors.Is(err, store.ErrAdmissionKey):
 		return Fail(400, err.Error())
 	case errors.Is(err, store.ErrNotFound):
 		return Fail(404, "execution or job not found")

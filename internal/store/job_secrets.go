@@ -2,10 +2,11 @@ package store
 
 import (
 	"context"
-	"errors"
+
+	"piped/internal/problem"
 )
 
-var ErrJobSecret = errors.New("provide a value for each new job secret")
+var ErrJobSecret = problem.New(problem.Invalid, "provide a value for each new job secret")
 
 // JobSecret contains ciphertext for internal persistence and worker snapshots.
 // A nil ciphertext in an update preserves the existing value with that name.
@@ -14,11 +15,11 @@ type JobSecret struct {
 	Ciphertext []byte `json:"-"`
 }
 
-func jobSecretNames(ctx context.Context, tx *transaction, jobID string) ([]string, error) {
+func jobSecretNames(ctx context.Context, tx writeTransaction, jobID string) ([]string, error) {
 	return tx.queryStrings(ctx, `SELECT name FROM job_secrets WHERE job_id = ? ORDER BY name`, jobID)
 }
 
-func jobSecretValues(ctx context.Context, tx *transaction, jobID string) ([]JobSecret, error) {
+func jobSecretValues(ctx context.Context, tx writeTransaction, jobID string) ([]JobSecret, error) {
 	rows, err := tx.QueryContext(ctx, `SELECT name, encrypted_value FROM job_secrets WHERE job_id = ? ORDER BY name`, jobID)
 	if err != nil {
 		return nil, err
@@ -38,7 +39,7 @@ func jobSecretValues(ctx context.Context, tx *transaction, jobID string) ([]JobS
 // Copies resolve preserved values from source ciphertext already rebound to the
 // new job. Edits resolve them from the current job. Merge the list once, inside
 // the same transaction as authorization, version checks, and the definition.
-func saveJobSecrets(ctx context.Context, tx *transaction, jobID string, changes, previous []JobSecret) error {
+func saveJobSecrets(ctx context.Context, tx writeTransaction, jobID string, changes, previous []JobSecret) error {
 	if changes == nil {
 		changes = previous
 		if changes == nil {

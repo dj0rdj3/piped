@@ -195,7 +195,9 @@ type outputRecord struct {
 // Read both representations in one statement snapshot, including while a host
 // is being archived. Limit database batches and inflate only the current block.
 type outputReader struct {
-	store         *Store
+	source interface {
+		QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+	}
 	ctx           context.Context
 	runID, hostID string
 	cursor        int64
@@ -308,7 +310,7 @@ func (r *outputReader) load() error {
 		1 AS compressed FROM run_output_archives WHERE run_id = ? AND host_id = ?` + archiveFilter +
 		` ORDER BY ` + archiveID + ` ` + order + ` LIMIT 1) archived_output` +
 		` ORDER BY ` + archiveID + ` ` + order + ` LIMIT 16`
-	rows, err := r.store.db.QueryContext(r.ctx, query, arguments...)
+	rows, err := r.source.QueryContext(r.ctx, query, arguments...)
 	if err != nil {
 		return err
 	}

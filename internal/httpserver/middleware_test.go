@@ -21,7 +21,7 @@ func TestAPIDeadlineCoversAuthenticationAndCancelsFinishedRequests(t *testing.T)
 					t.Error("API authentication/storage can wait indefinitely")
 				}
 			}))
-			request := httptest.NewRequest(http.MethodGet, path, nil)
+			request := httptest.NewRequest(http.MethodGet, server.config.Origin+path, nil)
 			handler.ServeHTTP(httptest.NewRecorder(), request)
 			if operation == nil || operation.Err() != context.Canceled {
 				t.Fatal("finished request retained its deadline timer or background work")

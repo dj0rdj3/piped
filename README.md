@@ -36,7 +36,7 @@ Create the encryption key and first administrator, then start Piped:
 Skip `keygen` if `.env` already exists, and `register` if an account already exists.
 Open [http://127.0.0.1:8080](http://127.0.0.1:8080) and sign in.
 Always start from the same directory: settings live in `.env`, and SQLite defaults to
-`data/piped.db`. Back up the database and keep a separate backup of `.env` with its encryption key.
+`data/piped.db`. Follow the [operations guide](docs/OPERATIONS.md) for backups and recovery.
 
 Edit `.env` to change settings; [.env.example](.env.example) lists the defaults.
 For access from other machines, use an HTTPS reverse proxy, set `PIPED_PUBLIC_URL`

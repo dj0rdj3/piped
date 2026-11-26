@@ -10,12 +10,10 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"piped/internal/auth"
 	"piped/internal/credentials"
 	"piped/internal/hosts"
 	"piped/internal/httpserver/response"
 	"piped/internal/jobs"
-	"piped/internal/notifications"
 	"piped/internal/store"
 )
 
@@ -92,36 +90,11 @@ func registerMCPTool[Input any](
 }
 
 func (s *server) mcpError(err error) error {
-	switch {
-	case errors.Is(err, jobs.ErrInput), errors.Is(err, store.ErrJobName),
-		errors.Is(err, store.ErrJobChanged), errors.Is(err, store.ErrJobHost), errors.Is(err, store.ErrJobTargets), errors.Is(err, store.ErrJobSecret),
-		errors.Is(err, store.ErrJobNotification), errors.Is(err, store.ErrJobNotificationLimit),
-		errors.Is(err, notifications.ErrInput), errors.Is(err, store.ErrNotificationType), errors.Is(err, store.ErrNotificationSecret), errors.Is(err, store.ErrNotificationChanged), errors.Is(err, store.ErrNotificationInUse),
-		errors.Is(err, store.ErrHostInUse), errors.Is(err, hosts.ErrInput),
-		errors.Is(err, store.ErrHostName), errors.Is(err, store.ErrHostChanged),
-		errors.Is(err, store.ErrHostCredential), errors.Is(err, store.ErrHostPassword):
-		return errors.New(err.Error())
-	}
-	err = response.ExecutionFailure(response.CredentialFailure(err))
-	var public *response.Error
-	if errors.As(err, &public) {
-		return errors.New(public.Message)
-	}
-	switch {
-	case errors.Is(err, store.ErrUnauthorized):
-		return errors.New("API key expired or revoked")
-	case errors.Is(err, store.ErrForbidden):
-		return store.ErrForbidden
-	case errors.Is(err, auth.ErrUsername), errors.Is(err, auth.ErrPassword), errors.Is(err, store.ErrLastUser):
-		return err
-	case errors.Is(err, store.ErrConflict):
-		return errors.New("username already exists")
-	case errors.Is(err, store.ErrNotFound):
-		return errors.New("record not found")
-	default:
+	public := response.PublicError(err)
+	if public.Status == 500 {
 		s.config.Logger.Error("MCP operation failed", "error", err)
-		return errors.New("operation failed")
 	}
+	return errors.New(public.Message)
 }
 
 type emptyToolInput struct{}
@@ -156,7 +129,7 @@ func (s *server) newMCPServer(actor store.Actor) *mcp.Server {
 	server.AddReceivingMiddleware(protectMCPArguments)
 	registerMCPTool(s, server, actor, "list_users", "List application users without passwords or authentication tokens.", store.ScopeUsersRead, false,
 		func(ctx context.Context, _ emptyToolInput) (any, error) {
-			users, err := s.config.Auth.Store.Users(ctx)
+			users, err := s.config.Auth.Store.Users(ctx, actor)
 			return map[string]any{"users": users}, err
 		})
 	registerMCPTool(s, server, actor, "create_user", "Create an administrator account. Requires users:write.", store.ScopeUsersWrite, false,

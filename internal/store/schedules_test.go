@@ -64,7 +64,7 @@ func TestScheduledAdmissionEligibilityAndWatermark(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, _, _, err = db.CreateScheduledRun(ctx, "rejected", fixture.jobID, fixture.version, fixture.slot, clock)
+			_, err = db.CreateScheduledRun(ctx, "rejected", fixture.jobID, fixture.version, fixture.slot, clock)
 			if !errors.Is(err, fixture.want) {
 				t.Fatalf("got %v, want %v", err, fixture.want)
 			}
@@ -81,14 +81,15 @@ func TestScheduledAdmissionEligibilityAndWatermark(t *testing.T) {
 	if _, err := db.db.ExecContext(ctx, `UPDATE jobs SET schedule_cron = ?, schedule_after = ?, last_schedule_minute = ? WHERE id = ?`, "* * * * *", minute-1, minute-60, job.ID); err != nil {
 		t.Fatal(err)
 	}
-	run, snapshot, connections, err := db.CreateScheduledRun(ctx, "admitted", job.ID, job.Version, minute, clock)
+	created, err := db.CreateScheduledRun(ctx, "admitted", job.ID, job.Version, minute, clock)
+	run, snapshot, connections := created.Run, created.Job, created.Connections
 	if err != nil || run.Trigger != "schedule" || run.ScheduledAt != minute || snapshot.Version != job.Version || len(connections) != 1 || len(connections[0].JobSecrets) != 1 {
 		t.Fatalf("eligible occurrence did not snapshot the job: %+v, %v", run, err)
 	}
 	if err := db.FinishRun(ctx, run.ID, "succeeded"); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, _, err := db.CreateScheduledRun(ctx, "duplicate", job.ID, job.Version, minute, clock); !errors.Is(err, ErrScheduleSkipped) {
+	if _, err := db.CreateScheduledRun(ctx, "duplicate", job.ID, job.Version, minute, clock); !errors.Is(err, ErrScheduleSkipped) {
 		t.Fatalf("completed occurrence admitted twice: %v", err)
 	}
 }
@@ -98,16 +99,16 @@ func TestScheduledSnapshotFailureDoesNotConsumeOccurrence(t *testing.T) {
 	ctx := context.Background()
 	at := time.Now().Add(2 * time.Hour).Truncate(time.Minute)
 	clock := func() time.Time { return at }
-	if _, _, _, err := db.CreateRun(ctx, actor, "existing", job.ID, job.Version); err != nil {
+	if _, err := db.AdmitRun(ctx, actor, RunAdmission{ID: "existing", RequestID: "existing", JobID: job.ID, Version: job.Version}); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.FinishRun(ctx, "existing", "succeeded"); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, _, err := db.CreateScheduledRun(ctx, "existing", job.ID, job.Version, at.Unix(), clock); err == nil || errors.Is(err, ErrScheduleSkipped) {
+	if _, err := db.CreateScheduledRun(ctx, "existing", job.ID, job.Version, at.Unix(), clock); err == nil || errors.Is(err, ErrScheduleSkipped) {
 		t.Fatalf("snapshot insertion failure not reported: %v", err)
 	}
-	if _, _, _, err := db.CreateScheduledRun(ctx, "retry", job.ID, job.Version, at.Unix(), clock); err != nil {
+	if _, err := db.CreateScheduledRun(ctx, "retry", job.ID, job.Version, at.Unix(), clock); err != nil {
 		t.Fatalf("failed snapshot consumed occurrence: %v", err)
 	}
 }

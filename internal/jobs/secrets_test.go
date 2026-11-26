@@ -36,7 +36,8 @@ func TestJobSecretLifecycleAndEncryption(t *testing.T) {
 	if bytes.Contains(encoded, []byte("sensitive-token")) || bytes.Contains(encoded, []byte("encrypted_value")) {
 		t.Fatal("secret returned by metadata read")
 	}
-	_, _, connections, err := db.CreateRun(ctx, actor, "snapshot", job.ID, job.Version)
+	connectionsAdmission, err := db.AdmitRun(ctx, actor, store.RunAdmission{ID: "snapshot", RequestID: "snapshot", JobID: job.ID, Version: job.Version})
+	connections := connectionsAdmission.(store.CreatedRun).Connections
 	if err != nil {
 		t.Fatal(err)
 	}

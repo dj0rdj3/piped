@@ -1,6 +1,7 @@
+import { useExecutionSession } from './features/executions/useExecutionSession.js';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mountComponent, deferred, settle } from '../test-support/component.js';
+import { mountModel, mountComponent, deferred, settle } from '../test-support/component.js';
 
 const currentUser = { id: 1, username: 'fixture' };
 const host = { id: 'host-one', name: 'Host', tags: [] };
@@ -284,7 +285,7 @@ test('a host-key decision stays pinned to its host and cannot clear a newer appr
     finished_at: 1,
     hosts: [{ host_id: 'selected-host', status: 'succeeded' }],
   };
-  const fixture = await mountComponent('features/executions/ExecutionDialog.vue', {
+  const fixture = await mountModel(useExecutionSession, {
     props: { job, initialRun: run },
     browser: { cancelAnimationFrame() {} },
     prepare(state) {

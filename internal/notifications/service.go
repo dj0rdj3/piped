@@ -11,21 +11,24 @@ import (
 	"net"
 	"net/http"
 	"strings"
-	"time"
 	"unicode"
 	"unicode/utf8"
 
+	"piped/internal/lifecycle"
+	"piped/internal/problem"
 	"piped/internal/secrets"
 	"piped/internal/store"
 )
 
-var ErrInput = errors.New("invalid notification target")
+var ErrInput = problem.New(problem.Invalid, "invalid notification target")
 
 type InputError struct{ Message string }
 
-func (e *InputError) Error() string { return e.Message }
-func (e *InputError) Unwrap() error { return ErrInput }
-func invalid(message string) error  { return &InputError{message} }
+func (e *InputError) Error() string    { return e.Message }
+func (e *InputError) Unwrap() error    { return ErrInput }
+func (*InputError) Kind() problem.Kind { return problem.Invalid }
+
+func invalid(message string) error { return &InputError{message} }
 
 type Endpoint = store.NotificationEndpoint
 
@@ -59,14 +62,14 @@ func New(ctx context.Context, db *store.Store, vault *secrets.Vault) (*Service, 
 	// No ambient proxies or redirects: endpoint credentials must stay at the
 	// explicitly configured destination. Internal homelab URLs are supported.
 	transport := &http.Transport{
-		DialContext:            (&net.Dialer{Timeout: 5 * time.Second}).DialContext,
-		TLSHandshakeTimeout:    5 * time.Second,
-		ResponseHeaderTimeout:  10 * time.Second,
+		DialContext:            (&net.Dialer{Timeout: lifecycle.DialTimeout}).DialContext,
+		TLSHandshakeTimeout:    lifecycle.DialTimeout,
+		ResponseHeaderTimeout:  lifecycle.NotificationTimeout,
 		MaxResponseHeaderBytes: 16 * 1024,
 		DisableKeepAlives:      true,
 	}
 	client := &http.Client{
-		Timeout:       10 * time.Second,
+		Timeout:       lifecycle.NotificationTimeout,
 		Transport:     transport,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
@@ -203,7 +206,7 @@ func (s *Service) NotifyHost(ctx context.Context, logger *slog.Logger, runID, jo
 	case <-ctx.Done():
 		return
 	}
-	lookup, cancel := context.WithTimeout(ctx, 5*time.Second)
+	lookup, cancel := context.WithTimeout(ctx, lifecycle.StorageTimeout)
 	output, err := s.db.NotificationOutput(lookup, runID, connection.Host.ID)
 	cancel()
 	if err != nil {

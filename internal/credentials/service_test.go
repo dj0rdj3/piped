@@ -326,3 +326,15 @@ func TestCredentialNameUnicodeBoundariesAndControls(t *testing.T) {
 		}
 	}
 }
+
+func TestCredentialMutationIDsAreValidatedByTheSharedService(t *testing.T) {
+	service, actor, _ := fixture(t)
+	for _, id := range []string{"", "bad\x00id", "bad\xffid", strings.Repeat("z", 32)} {
+		if err := service.Rename(context.Background(), actor, id, "Valid name"); !errors.Is(err, ErrInput) {
+			t.Fatalf("invalid rename ID bypassed shared validation: %v", err)
+		}
+		if err := service.Delete(context.Background(), actor, id); !errors.Is(err, ErrInput) {
+			t.Fatalf("invalid delete ID bypassed shared validation: %v", err)
+		}
+	}
+}

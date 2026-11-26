@@ -9,16 +9,7 @@ import (
 )
 
 func (s *Server) users(w http.ResponseWriter, r *http.Request, actor store.Actor) error {
-	if err := s.auth.Store.Authorize(r.Context(), actor, store.ScopeUsersRead); err != nil {
-		return err
-	}
-	users, err := s.auth.Store.Users(r.Context())
-	if err != nil {
-		return err
-	}
-	return listResponse(w, r, "users", users, func(item store.User) listEntry {
-		return listEntry{id: strconv.FormatInt(item.ID, 10), name: item.Username, search: item.Username}
-	}, nil)
+	return listResponse(w, r, actor, "users", s.auth.Store.UsersPage, nil)
 }
 
 func (s *Server) reauthenticate(w http.ResponseWriter, r *http.Request, actor store.Actor, password string) error {

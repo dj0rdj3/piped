@@ -1,0 +1,1 @@
+CREATE TABLE list_state (version INTEGER PRIMARY KEY);

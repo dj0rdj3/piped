@@ -27,21 +27,18 @@ func (s *Store) UserByName(ctx context.Context, username string) (User, error) {
 	return scanUser(s.db.QueryRowContext(ctx, "SELECT id, username, password_hash, created_at FROM users WHERE lower(username) = lower(?)", username))
 }
 
-func (s *Store) Users(ctx context.Context) ([]User, error) {
-	rows, err := s.db.QueryContext(ctx, "SELECT id, username, created_at FROM users ORDER BY username")
+// Users uses the same transaction for fresh authority and public rows.
+func (s *Store) Users(ctx context.Context, actor Actor) ([]User, error) {
+	tx, err := s.beginAuthorized(ctx, actor, ScopeUsersRead)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	users := []User{}
-	for rows.Next() {
-		var u User
-		if err := rows.Scan(&u.ID, &u.Username, &u.CreatedAt); err != nil {
-			return nil, err
-		}
-		users = append(users, u)
+	defer tx.Rollback()
+	users, err := readUsers(ctx, tx, actor, nil)
+	if err != nil {
+		return nil, err
 	}
-	return users, rows.Err()
+	return users, tx.Commit()
 }
 
 func insertUser(ctx context.Context, tx *transaction, username, hash string) (User, error) {
@@ -62,6 +59,9 @@ func insertUser(ctx context.Context, tx *transaction, username, hash string) (Us
 		return User{}, ErrConflict
 	}
 	if err != nil {
+		return User{}, err
+	}
+	if err := refreshListEntry(ctx, tx, "users", userListID(id)); err != nil {
 		return User{}, err
 	}
 	return User{ID: id, Username: username, PasswordHash: hash, CreatedAt: now}, err
@@ -93,7 +93,7 @@ func (s *Store) CreateUser(ctx context.Context, actor Actor, username, hash stri
 		return User{}, err
 	}
 	defer tx.Rollback()
-	u, err := insertUser(ctx, tx, username, hash)
+	u, err := insertUser(ctx, tx.transaction, username, hash)
 	if err != nil {
 		return User{}, err
 	}
@@ -124,6 +124,12 @@ func (s *Store) DeleteUser(ctx context.Context, actor Actor, id int64) error {
 	if n == 0 {
 		return ErrNotFound
 	}
+	if err := refreshListEntry(ctx, tx, "users", userListID(id)); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM list_entries WHERE kind = 'keys' AND owner_id = ?", id); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 
@@ -148,6 +154,9 @@ func (s *Store) ChangePassword(ctx context.Context, actor Actor, id int64, hash 
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, "DELETE FROM api_keys WHERE user_id = ?", id); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM list_entries WHERE kind = 'keys' AND owner_id = ?", id); err != nil {
 		return err
 	}
 	return tx.Commit()

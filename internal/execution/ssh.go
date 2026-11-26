@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"golang.org/x/crypto/ssh"
+	"piped/internal/lifecycle"
 	"piped/internal/store"
 )
 
@@ -198,7 +199,7 @@ func (e *Engine) runSSH(ctx context.Context, c store.Connection, script string, 
 	cleanupStop := context.AfterFunc(ctx, func() {
 		defer close(cleanupDone)
 		defer connection.Close()
-		_ = connection.SetDeadline(time.Now().Add(5 * time.Second))
+		_ = connection.SetDeadline(time.Now().Add(lifecycle.SSHCleanupTimeout))
 		timer := time.NewTimer(2 * time.Second)
 		defer timer.Stop()
 		select {
@@ -241,7 +242,7 @@ func (e *Engine) runSSH(ctx context.Context, c store.Connection, script string, 
 		}
 	}
 	if len(c.Environment) > 0 {
-		timer := time.NewTimer(5 * time.Second)
+		timer := time.NewTimer(lifecycle.EnvironmentTimeout)
 		defer timer.Stop()
 		select {
 		case <-environmentReady:
@@ -393,12 +394,12 @@ func (e *Engine) connectSSH(ctx context.Context, c store.Connection, auth ssh.Au
 		return nil, nil, nil, err
 	}
 	for {
-		connection, err := (&net.Dialer{Timeout: 15 * time.Second, KeepAlive: 15 * time.Second}).DialContext(ctx, "tcp", address)
+		connection, err := (&net.Dialer{Timeout: lifecycle.SSHHandshakeTimeout, KeepAlive: 15 * time.Second}).DialContext(ctx, "tcp", address)
 		if err != nil {
 			return nil, nil, nil, err
 		}
 		stop := context.AfterFunc(ctx, func() { _ = connection.Close() })
-		if err := connection.SetDeadline(time.Now().Add(15 * time.Second)); err != nil {
+		if err := connection.SetDeadline(time.Now().Add(lifecycle.SSHHandshakeTimeout)); err != nil {
 			stop()
 			connection.Close()
 			return nil, nil, nil, err

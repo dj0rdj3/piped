@@ -53,7 +53,7 @@ func TestManualStartInterruptsBeforeWaitingForMaintenance(t *testing.T) {
 	f.engine.maintenanceMu.Unlock()
 	done := make(chan error, 1)
 	go func() {
-		_, err := f.engine.Start(context.Background(), f.actor, f.job.ID, f.job.Version)
+		_, err := f.engine.Start(context.Background(), f.actor, StartRequest{JobID: f.job.ID, Version: f.job.Version, RequestID: "fixture-intent"})
 		done <- err
 	}()
 	select {
@@ -96,7 +96,7 @@ func TestUnauthorizedManualStartDoesNotInterruptMaintenance(t *testing.T) {
 	f.engine.maintenanceMu.Unlock()
 	actor := f.actor
 	actor.SessionHash = "invalid-session"
-	if _, err := f.engine.Start(context.Background(), actor, f.job.ID, f.job.Version); !errors.Is(err, store.ErrUnauthorized) {
+	if _, err := f.engine.Start(context.Background(), actor, StartRequest{JobID: f.job.ID, Version: f.job.Version, RequestID: "fixture-intent"}); !errors.Is(err, store.ErrUnauthorized) {
 		t.Fatal("invalid session admitted", err)
 	}
 	if maintenance.Err() != nil {

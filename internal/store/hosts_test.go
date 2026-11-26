@@ -127,7 +127,8 @@ func TestFreshSchemaPreservesExplicitSudoPolicy(t *testing.T) {
 	if job.RunAsSudo || job.Version != 1 {
 		t.Fatalf("unexpected fresh job policy: %+v", job)
 	}
-	run, _, _, err := db.CreateRun(ctx, actor, "run", job.ID, job.Version)
+	runAdmission, err := db.AdmitRun(ctx, actor, RunAdmission{ID: "run", RequestID: "run", JobID: job.ID, Version: job.Version})
+	run := runAdmission.PublicRun()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -186,7 +187,8 @@ func TestHostCredentialReferencesAndDeletionRollback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _, connections, err := db.CreateRun(ctx, actor, "snapshot", job.ID, job.Version)
+	connectionsAdmission, err := db.AdmitRun(ctx, actor, RunAdmission{ID: "snapshot", RequestID: "snapshot", JobID: job.ID, Version: job.Version})
+	connections := connectionsAdmission.(CreatedRun).Connections
 	if err != nil || len(connections) != 1 || !bytes.Equal(connections[0].Password, []byte("encrypted password")) || !bytes.Equal(connections[0].SudoPassword, []byte("encrypted sudo password")) {
 		t.Fatalf("rejected writes changed encrypted secrets: %v", err)
 	}

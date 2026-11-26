@@ -10,6 +10,7 @@ import (
 	"net/http"
 
 	"piped/internal/auth"
+	"piped/internal/problem"
 	"piped/internal/store"
 )
 
@@ -21,9 +22,24 @@ type Error struct {
 func (e *Error) Error() string              { return e.Message }
 func Fail(status int, message string) error { return &Error{Status: status, Message: message} }
 
-func WriteError(w http.ResponseWriter, err error, logger *slog.Logger) {
+func PublicError(err error) *Error {
 	var public *Error
+	if failure, ok := problem.As(err); ok {
+		status := map[problem.Kind]int{
+			problem.Invalid:      400,
+			problem.Unauthorized: 401,
+			problem.Forbidden:    403,
+			problem.Missing:      404,
+			problem.Conflict:     409,
+			problem.Unavailable:  503,
+			problem.Uncertain:    503,
+		}[failure.Kind()]
+		if status != 0 {
+			public = &Error{status, failure.Error()}
+		}
+	}
 	switch {
+	case public != nil:
 	case errors.As(err, &public):
 	case errors.Is(err, auth.ErrCredentials):
 		public = &Error{401, "invalid username or password"}
@@ -31,10 +47,8 @@ func WriteError(w http.ResponseWriter, err error, logger *slog.Logger) {
 		public = &Error{400, err.Error()}
 	case errors.Is(err, auth.ErrBusy):
 		public = &Error{503, err.Error()}
-		w.Header().Set("Retry-After", "2")
 	case errors.Is(err, context.DeadlineExceeded):
 		public = &Error{503, "request timed out; try again"}
-		w.Header().Set("Retry-After", "2")
 	case errors.Is(err, store.ErrConflict):
 		public = &Error{409, "username already exists"}
 	case errors.Is(err, store.ErrNotFound):
@@ -48,8 +62,18 @@ func WriteError(w http.ResponseWriter, err error, logger *slog.Logger) {
 	case errors.Is(err, store.ErrLastUser):
 		public = &Error{409, "the last administrator cannot be removed"}
 	default:
-		logger.Error("request failed", "error", err)
 		public = &Error{500, "request failed; try again"}
+	}
+	return public
+}
+
+func WriteError(w http.ResponseWriter, err error, logger *slog.Logger) {
+	public := PublicError(err)
+	if public.Status == 500 {
+		logger.Error("request failed", "error", err)
+	}
+	if public.Status == 503 {
+		w.Header().Set("Retry-After", "2")
 	}
 	JSON(w, public.Status, map[string]string{"error": public.Message})
 }

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"piped/internal/lifecycle"
 	"piped/internal/store"
 )
 
@@ -54,13 +55,13 @@ func (s *Handler) streamTerminal(ctx context.Context, conn *websocket.Conn, acto
 		case <-changes:
 		case <-inputDone:
 		case <-ticker.C:
-			check, cancel := context.WithTimeout(ctx, 5*time.Second)
+			check, cancel := context.WithTimeout(ctx, lifecycle.StorageTimeout)
 			err := s.store.Authorize(check, actor, store.ScopeRunsRead)
 			cancel()
 			if err != nil {
 				return err
 			}
-			pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			pingCtx, cancel := context.WithTimeout(ctx, lifecycle.StorageTimeout)
 			err = conn.Ping(pingCtx)
 			cancel()
 			if err != nil {

@@ -158,7 +158,7 @@ have `name` and optional `value`, where an omitted value preserves that named
 secret. An empty array removes all secrets. Copy using `copy_from: {"id":"SOURCE_ID",
 "version":1}` in a creation request; secret copying happens on the server.
 
-Run a job with POST `/jobs/{id}/run` and `{"version":1}`, using its current version. Host-key approval uses
+Run a job with POST `/jobs/{id}/run` and `{"version":1,"request_id":"unique-reviewed-start"}`, using its current version. Host-key approval uses
 `{"fingerprint":"SHA256:...","accept":true}` with the pending fingerprint from
 run metadata; deny with `accept:false`. Send terminal input with `{"data":"text\n"}`.
 Cancel an individual host with POST `/runs/{run}/hosts/{host}/cancel` (no body required).
@@ -176,6 +176,16 @@ have endpoint-specific limits and an overall 1 MiB bearer request limit.
 API requests have a 15-second processing budget. Deadline responses include
 `Retry-After: 2` and do not invalidate the key. Re-read resource state before retrying
 a timed-out mutation, since its write may already have committed.
+
+Job starts require a `request_id` in the JSON body or `Idempotency-Key`
+header (1-128 ASCII letters/digits or `-_.:`). If both are supplied they must match.
+Reuse the same identity and reviewed job/version after an uncertain response to
+retrieve that user's existing admission without starting scripts again. Rebinding
+an identity to another job/version returns 409; every retry rechecks authorization.
+The identity is retained with run history and expires when that history is purged.
+Generate a new identity for each intentionally new execution; do not retry expired
+identities. Scheduling already identifies occurrences by job and minute and never
+replays missed slots. These guarantees do not imply exactly-once remote SSH execution.
 
 Bearer requests are limited to 120 per minute per client IP and per key. HTTP 429
 includes `Retry-After: 60`. Authentication attempts for browser key management retain
@@ -271,3 +281,12 @@ also include the full `tags` list. Omit `limit` for the complete list. Jobs sear
 includes effective host names when the key also has `hosts:read`. List reads can
 select up to 100 comma-separated `ids`; authorization and secret protection are
 unchanged.
+
+`GET /api/health` reports HTTP availability; `GET /api/ready` returns 200 when
+execution ownership is healthy and no persistence retry is pending, otherwise 503.
+The readiness response contains only a generic status. Authenticated `GET /api/runtime`
+and `GET /api/v1/runtime` require `runs:read` and return aggregate execution counts,
+pending persistence, ownership-loss and shutdown state. Controllers whose state
+lock is busy are counted in `busy_runs` rather than delaying the snapshot; their
+script/result counts are omitted from that snapshot. Development clients can
+read the same payload through `get_runtime_status`.

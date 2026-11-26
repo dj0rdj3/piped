@@ -4,9 +4,9 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"time"
 
 	"piped/internal/auth"
+	"piped/internal/lifecycle"
 )
 
 type prompter interface {
@@ -53,7 +53,7 @@ func register(ctx context.Context, service *auth.Service, prompts prompter, outp
 			}
 			continue
 		}
-		setup, cancel := context.WithTimeout(ctx, 5*time.Second)
+		setup, cancel := context.WithTimeout(ctx, lifecycle.StorageTimeout)
 		user, err := service.InitAdmin(setup, username, password)
 		cancel()
 		if err != nil {

@@ -79,7 +79,7 @@ func TestOwnershipConnectionLossStopsExecution(t *testing.T) {
 	if f.engine.Err() != ErrOwnershipLost {
 		t.Fatal("ownership loss would be reported as a successful server shutdown")
 	}
-	if _, err := f.engine.Start(context.Background(), f.actor, f.job.ID, f.job.Version); err != ErrInactive {
+	if _, err := f.engine.Start(context.Background(), f.actor, StartRequest{JobID: f.job.ID, Version: f.job.Version, RequestID: "fixture-intent"}); err != ErrInactive {
 		t.Fatal("ownership loss still permits admission", err)
 	}
 }
@@ -135,7 +135,7 @@ func TestKilledOwnershipSessionFencesAdmissionBeforeHeartbeat(t *testing.T) {
 	}
 	// No heartbeat wait: both generation and live SQL lock are checked while
 	// holding admission's writer lock. A replacement need not have claimed yet.
-	_, err = f.engine.Start(context.Background(), f.actor, f.job.ID, f.job.Version)
+	_, err = f.engine.Start(context.Background(), f.actor, StartRequest{JobID: f.job.ID, Version: f.job.Version, RequestID: "fixture-intent"})
 	if !errors.Is(err, ErrOwnershipLost) && !errors.Is(err, ErrInactive) {
 		t.Fatal("stale engine admitted work after its actual SQL session died", err)
 	}

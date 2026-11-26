@@ -19,20 +19,23 @@ import (
 	"unicode/utf8"
 
 	"golang.org/x/crypto/ssh"
+	"piped/internal/problem"
 	"piped/internal/secrets"
 	"piped/internal/store"
 )
 
 var (
-	ErrInput = errors.New("invalid credential")
-	ErrBusy  = errors.New("key processing is busy; try again")
+	ErrInput = problem.New(problem.Invalid, "invalid credential")
+	ErrBusy  = problem.New(problem.Unavailable, "key processing is busy; try again")
 )
 
 type InputError struct{ Message string }
 
-func (e *InputError) Error() string { return e.Message }
-func (e *InputError) Unwrap() error { return ErrInput }
-func invalid(message string) error  { return &InputError{Message: message} }
+func (e *InputError) Error() string    { return e.Message }
+func (e *InputError) Unwrap() error    { return ErrInput }
+func (*InputError) Kind() problem.Kind { return problem.Invalid }
+
+func invalid(message string) error { return &InputError{Message: message} }
 
 type Service struct {
 	store    *store.Store
@@ -289,6 +292,9 @@ func (s *Service) comment(actor store.Actor) string {
 }
 
 func (s *Service) Rename(ctx context.Context, actor store.Actor, id, name string) error {
+	if !validID(id) {
+		return invalid("invalid credential ID")
+	}
 	name, err := Name(name)
 	if err != nil {
 		return err
@@ -297,5 +303,13 @@ func (s *Service) Rename(ctx context.Context, actor store.Actor, id, name string
 }
 
 func (s *Service) Delete(ctx context.Context, actor store.Actor, id string) error {
+	if !validID(id) {
+		return invalid("invalid credential ID")
+	}
 	return s.store.DeleteCredential(ctx, actor, id)
+}
+
+func validID(id string) bool {
+	decoded, err := hex.DecodeString(id)
+	return err == nil && len(decoded) == 16
 }

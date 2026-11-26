@@ -33,7 +33,7 @@ func benchmarkRun(b *testing.B) (*Store, Actor) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	if _, _, _, err := s.CreateRun(ctx, actor, "run", job.ID, job.Version); err != nil {
+	if _, err := s.AdmitRun(ctx, actor, RunAdmission{ID: "run", RequestID: "run", JobID: job.ID, Version: job.Version}); err != nil {
 		b.Fatal(err)
 	}
 	return s, actor

@@ -4,16 +4,15 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"strconv"
+	"fmt"
 	"strings"
 	"time"
 
 	"github.com/go-sql-driver/mysql"
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/stdlib"
 	"modernc.org/sqlite"
 	sqlite3 "modernc.org/sqlite/lib"
+	"piped/internal/lifecycle"
 )
 
 // Config selects one database. DSN is secret and must never be logged.
@@ -33,60 +32,15 @@ func OpenDatabase(ctx context.Context, config Config) (*Store, error) {
 		return Open(ctx, config.Path)
 	}
 	// Setup queries and migrations also need a deadline after TCP connects.
-	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, lifecycle.StartupTimeout)
 	defer cancel()
-	var db *sql.DB
-	switch config.Driver {
-	case "postgres":
-		parsed, err := pgx.ParseConfig(config.DSN)
-		if err != nil || config.DSN == "" {
-			return nil, errors.New("invalid PostgreSQL database DSN")
-		}
-		parsed.ConnectTimeout = 5 * time.Second
-		parsed.RuntimeParams["synchronous_commit"] = "on"
-		parsed.RuntimeParams["lock_timeout"] = "5s"
-		parsed.RuntimeParams["client_encoding"] = "UTF8"
-		db = stdlib.OpenDB(*parsed)
-	case "mariadb", "mysql":
-		parsed, err := mysql.ParseDSN(config.DSN)
-		if err != nil || parsed == nil || parsed.DBName == "" || parsed.User == "" {
-			return nil, errors.New("invalid MariaDB/MySQL DSN; specify a user and database")
-		}
-		// These options are application invariants, not configurable escape hatches.
-		parsed.MultiStatements = false
-		parsed.InterpolateParams = false
-		parsed.AllowAllFiles = false
-		parsed.ClientFoundRows = true
-		parsed.Timeout = 5 * time.Second
-		// Bound established network I/O as well as dialing, including COMMIT
-		// and ROLLBACK, whose driver methods have no context argument.
-		if parsed.ReadTimeout <= 0 || parsed.ReadTimeout > 5*time.Second {
-			parsed.ReadTimeout = 5 * time.Second
-		}
-		if parsed.WriteTimeout <= 0 || parsed.WriteTimeout > 5*time.Second {
-			parsed.WriteTimeout = 5 * time.Second
-		}
-		if err := parsed.Apply(mysql.Charset("utf8mb4", "utf8mb4_bin")); err != nil {
-			return nil, errors.New("configure database character set failed")
-		}
-		if parsed.Params == nil {
-			parsed.Params = make(map[string]string)
-		}
-		parsed.Params["sql_mode"] = "'STRICT_ALL_TABLES,NO_ENGINE_SUBSTITUTION'"
-		parsed.Params["autocommit"] = "1"
-		parsed.Params["foreign_key_checks"] = "1"
-		parsed.Params["unique_checks"] = "1"
-		if config.Driver == "mariadb" {
-			parsed.Params["check_constraint_checks"] = "1"
-		}
-		parsed.Params["innodb_lock_wait_timeout"] = "5"
-		connector, err := mysql.NewConnector(parsed)
-		if err != nil {
-			return nil, errors.New("invalid MariaDB/MySQL connection settings")
-		}
-		db = sql.OpenDB(connector)
-	default:
+	adapter := adapterFor(config.Driver)
+	if adapter == nil || adapter.open == nil {
 		return nil, errors.New("unsupported database driver")
+	}
+	db, err := adapter.open(config)
+	if err != nil {
+		return nil, err
 	}
 	db.SetMaxOpenConns(8)
 	db.SetMaxIdleConns(4)
@@ -105,19 +59,24 @@ func OpenDatabase(ctx context.Context, config Config) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	if err := s.initializeHostTags(ctx); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("initialize host membership: %w", err)
+	}
+	if err := s.initializeLists(ctx); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("initialize list metadata: %w", err)
+	}
 	return s, nil
 }
 
 func (s *Store) verifyDurability(ctx context.Context) error {
+	adapter := s.db.adapter()
 	var enabled string
-	query := "SHOW fsync"
-	if s.db.dialect != "postgres" {
-		query = "SELECT @@innodb_flush_log_at_trx_commit"
-	}
-	if err := s.db.DB.QueryRowContext(ctx, query).Scan(&enabled); err != nil {
+	if err := s.db.DB.QueryRowContext(ctx, adapter.durabilityQuery).Scan(&enabled); err != nil {
 		return errors.New("cannot verify database durability settings")
 	}
-	if enabled != "on" && enabled != "1" {
+	if enabled != adapter.durabilityValue {
 		return errors.New("database requires fsync=on (PostgreSQL) or innodb_flush_log_at_trx_commit=1 (MariaDB/MySQL)")
 	}
 	return nil
@@ -139,14 +98,14 @@ type transaction struct {
 }
 
 func (d *database) BeginTx(ctx context.Context, options *sql.TxOptions) (*transaction, error) {
-	if d.dialect != "sqlite" {
+	if d.adapter().writerLock {
 		options = &sql.TxOptions{Isolation: sql.LevelReadCommitted}
 	}
 	tx, err := d.DB.BeginTx(ctx, options)
 	if err != nil {
 		return nil, err
 	}
-	if d.dialect != "sqlite" {
+	if d.adapter().writerLock {
 		var id int
 		if err := tx.QueryRowContext(ctx, "SELECT id FROM store_lock WHERE id = 1 FOR UPDATE").Scan(&id); err != nil {
 			tx.Rollback()
@@ -241,44 +200,7 @@ func sqlArguments(args []any) []any {
 	return args
 }
 
-func (d *database) query(query string) string {
-	// Queries are application-owned SQL, never user text. These identifiers
-	// preserve SQLite's existing trigger column and implicit insertion sequence.
-	if d.dialect == "sqlite" {
-		query = strings.ReplaceAll(query, "run_source", "trigger")
-		query = strings.ReplaceAll(query, "run_sequence", "rowid")
-	}
-	if d.dialect != "postgres" {
-		return query
-	}
-	var result strings.Builder
-	parameter := 0
-	var quote byte
-	for i := 0; i < len(query); i++ {
-		character := query[i]
-		if quote != 0 {
-			result.WriteByte(character)
-			if character == quote {
-				if i+1 < len(query) && query[i+1] == quote {
-					i++
-					result.WriteByte(quote)
-				} else {
-					quote = 0
-				}
-			}
-		} else if character == '\'' || character == '"' {
-			quote = character
-			result.WriteByte(character)
-		} else if character == '?' {
-			parameter++
-			result.WriteByte('$')
-			result.WriteString(strconv.Itoa(parameter))
-		} else {
-			result.WriteByte(character)
-		}
-	}
-	return result.String()
-}
+func (d *database) query(query string) string { return d.adapter().bind(query) }
 
 func uniqueViolation(err error) bool {
 	var sqliteErr *sqlite.Error

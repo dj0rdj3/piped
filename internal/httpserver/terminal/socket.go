@@ -13,7 +13,9 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
+	"piped/internal/execution"
 	"piped/internal/httpserver/response"
+	"piped/internal/lifecycle"
 	"piped/internal/store"
 )
 
@@ -91,7 +93,7 @@ func (s *Handler) Serve(w http.ResponseWriter, r *http.Request, actor store.Acto
 // Read status before output: a completed snapshot guarantees all final chunks
 // were committed before the subsequent cursor reads. Wakeups cover later changes.
 func (s *Handler) pushTerminal(ctx context.Context, conn *websocket.Conn, actor store.Actor, runID, hostID string, after *int64, channel *terminalChannel) (bool, bool, error) {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, lifecycle.StorageTimeout)
 	defer cancel()
 	run, err := s.store.Run(ctx, actor, runID)
 	if err != nil {
@@ -142,7 +144,7 @@ func (s *Handler) pushTerminal(ctx context.Context, conn *websocket.Conn, actor 
 }
 
 func writeTerminal(ctx context.Context, conn *websocket.Conn, message any) error {
-	writeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	writeCtx, cancel := context.WithTimeout(ctx, lifecycle.TerminalWriteTimeout)
 	defer cancel()
 	return wsjson.Write(writeCtx, conn, message)
 }
@@ -208,7 +210,7 @@ func (s *Handler) readTerminalMessages(ctx context.Context, conn *websocket.Conn
 		}
 		lastID = message.ID
 		inputs.Add(1)
-		err = s.executions.Input(ctx, actor, runID, hostID, message.Data)
+		err = s.executions.Input(ctx, actor, execution.InputRequest{RunID: runID, HostID: hostID, Data: message.Data})
 		message.Data = ""
 		result := map[string]any{"type": "input_result", "id": message.ID}
 		if err != nil {
@@ -232,7 +234,7 @@ func (s *Handler) readTerminalMessages(ctx context.Context, conn *websocket.Conn
 }
 
 func (s *Handler) sendTerminalHistory(ctx context.Context, conn *websocket.Conn, actor store.Actor, runID, hostID string, id, before int64, offset int) error {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, lifecycle.StorageTimeout)
 	defer cancel()
 	result := map[string]any{"type": "history", "id": id}
 	if !s.allow("terminal-history:"+actor.SessionHash, time.Now()) {

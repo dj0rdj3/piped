@@ -3,137 +3,16 @@ package execution
 import (
 	"context"
 	"io"
-	"net"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/go-sql-driver/mysql"
 	"golang.org/x/crypto/ssh"
 	"piped/internal/jobs"
 	"piped/internal/store"
 	"piped/internal/testdatabase"
 )
-
-// Drop exactly one admission COMMIT, either before it reaches the disposable
-// server or after the server confirms success. Other traffic remains intact.
-func admissionCommitProxy(t *testing.T, driver, dsn string, afterCommit bool) (store.Config, <-chan struct{}) {
-	t.Helper()
-	parsed, err := mysql.ParseDSN(dsn)
-	if err != nil || parsed.Net != "tcp" || parsed.TLSConfig != "" {
-		t.Fatal("admission fault requires disposable unencrypted TCP MySQL/MariaDB")
-	}
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	destination := parsed.Addr
-	parsed.Addr = listener.Addr().String()
-	dropped := make(chan struct{})
-	var injected atomic.Bool
-	var workers sync.WaitGroup
-	var mu sync.Mutex
-	var connections []net.Conn
-	stopped := false
-	workers.Add(1)
-	go func() {
-		defer workers.Done()
-		for {
-			client, err := listener.Accept()
-			if err != nil {
-				return
-			}
-			server, err := net.DialTimeout("tcp", destination, time.Second)
-			if err != nil {
-				client.Close()
-				return
-			}
-			mu.Lock()
-			if stopped {
-				mu.Unlock()
-				client.Close()
-				server.Close()
-				return
-			}
-			connections = append(connections, client, server)
-			mu.Unlock()
-			var awaitingCommit atomic.Bool
-			workers.Add(2)
-			go func() {
-				defer workers.Done()
-				defer client.Close()
-				defer server.Close()
-				admission := false
-				for {
-					packet, err := mysqlPacket(client)
-					if err != nil {
-						return
-					}
-					payload := packet[4:]
-					if len(payload) > 1 && payload[0] == 0x16 && strings.Contains(strings.ToUpper(string(payload[1:])), "INSERT INTO RUNS") {
-						admission = true
-					}
-					if admission && len(payload) > 1 && payload[0] == 0x03 && strings.EqualFold(string(payload[1:]), "COMMIT") && injected.CompareAndSwap(false, true) {
-						if !afterCommit {
-							close(dropped)
-							return // Disconnect rolls back the still-open transaction.
-						}
-						awaitingCommit.Store(true)
-					}
-					if _, err := server.Write(packet); err != nil {
-						return
-					}
-				}
-			}()
-			go func() {
-				defer workers.Done()
-				defer client.Close()
-				defer server.Close()
-				for {
-					packet, err := mysqlPacket(server)
-					if err != nil {
-						return
-					}
-					if awaitingCommit.Load() {
-						if len(packet) < 5 || packet[4] != 0x00 {
-							t.Error("admission COMMIT did not receive a server success reply")
-						}
-						close(dropped)
-						return // Durable commit, but its success cannot reach the client.
-					}
-					if _, err := client.Write(packet); err != nil {
-						return
-					}
-				}
-			}()
-		}
-	}()
-	t.Cleanup(func() {
-		listener.Close()
-		mu.Lock()
-		stopped = true
-		for _, connection := range connections {
-			connection.Close()
-		}
-		mu.Unlock()
-		workers.Wait()
-	})
-	return store.Config{Driver: driver, DSN: parsed.FormatDSN()}, dropped
-}
-
-func mysqlPacket(connection net.Conn) ([]byte, error) {
-	header := make([]byte, 4)
-	if _, err := io.ReadFull(connection, header); err != nil {
-		return nil, err
-	}
-	size := int(header[0]) | int(header[1])<<8 | int(header[2])<<16
-	packet := make([]byte, 4+size)
-	copy(packet, header)
-	_, err := io.ReadFull(connection, packet[4:])
-	return packet, err
-}
 
 func TestAdmissionCommitDisconnectDoesNotStrandOrReplayRuns(t *testing.T) {
 	for _, scheduled := range []bool{false, true} {
@@ -141,11 +20,11 @@ func TestAdmissionCommitDisconnectDoesNotStrandOrReplayRuns(t *testing.T) {
 			name := map[bool]string{false: "manual", true: "scheduled"}[scheduled] + "/" + map[bool]string{false: "rolled_back", true: "durably_committed"}[afterCommit]
 			t.Run(name, func(t *testing.T) {
 				driver, dsn := testdatabase.Settings(t)
-				if driver != "mysql" && driver != "mariadb" {
-					t.Skip("requires disposable MySQL/MariaDB wire protocol")
+				if driver == "sqlite" {
+					t.Skip("requires a disposable server wire protocol")
 				}
-				configuration, dropped := admissionCommitProxy(t, driver, dsn, afterCommit)
-				f := newFixtureWithDatabase(t, "parallel", false, configuration)
+				proxyDSN, dropped := testdatabase.DropAdmissionCommit(t, driver, dsn, afterCommit)
+				f := newFixtureWithDatabase(t, "parallel", false, store.Config{Driver: driver, DSN: proxyDSN})
 				job, err := jobService(t, f.db, f.vault).Save(context.Background(), f.actor, f.job.ID, jobs.Input{
 					Name: f.job.Name, Script: f.job.Script, HostIDs: f.job.HostIDs,
 					ExecutionMode: "parallel", Version: f.job.Version,
@@ -169,7 +48,7 @@ func TestAdmissionCommitDisconnectDoesNotStrandOrReplayRuns(t *testing.T) {
 				}
 				if scheduled {
 					f.engine.runSchedules(at)
-				} else if _, err := f.engine.Start(context.Background(), f.actor, job.ID, job.Version); err == nil {
+				} else if _, err := f.engine.Start(context.Background(), f.actor, StartRequest{JobID: job.ID, Version: job.Version, RequestID: "faulted-admission"}); err == nil {
 					t.Fatal("lost commit acknowledgement was reported as successful admission")
 				}
 				select {
@@ -198,6 +77,12 @@ func TestAdmissionCommitDisconnectDoesNotStrandOrReplayRuns(t *testing.T) {
 				}
 				if calls.Load() != 0 {
 					t.Fatal("ambiguous admission executed or replayed SSH", calls.Load())
+				}
+				if afterCommit && !scheduled {
+					replayed, err := f.engine.Start(context.Background(), f.actor, StartRequest{JobID: job.ID, Version: job.Version, RequestID: "faulted-admission"})
+					if err != nil || replayed.ID != runs[0].ID || replayed.Status != "failed" || calls.Load() != 0 {
+						t.Fatal("retry after a lost successful COMMIT launched scripts", replayed.ID, err, calls.Load())
+					}
 				}
 				// A later cron occurrence must run normally, proving reconciliation
 				// removed the unfinished-row overlap block without restarting.

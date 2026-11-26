@@ -3,6 +3,7 @@ package execution
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
@@ -121,7 +122,7 @@ func finished(t *testing.T, f *engineFixture, id string) store.Run {
 }
 func startFixture(t *testing.T, f *engineFixture) store.Run {
 	t.Helper()
-	run, err := f.engine.Start(context.Background(), f.actor, f.job.ID, f.job.Version)
+	run, err := f.engine.Start(context.Background(), f.actor, StartRequest{JobID: f.job.ID, Version: f.job.Version, RequestID: rand.Text()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,7 +220,7 @@ func TestParallelFailureAndCancellationPolicies(t *testing.T) {
 					}
 				}
 				if cancelHost {
-					if err := f.engine.Cancel(context.Background(), f.actor, run.ID, f.hosts[0].ID); err != nil {
+					if err := f.engine.Cancel(context.Background(), f.actor, HostRequest{RunID: run.ID, HostID: f.hosts[0].ID}); err != nil {
 						t.Fatal(err)
 					}
 				} else {
@@ -290,7 +291,7 @@ func TestStoppingOneRunLeavesConcurrentRunsOnTheSameHostsActive(t *testing.T) {
 				}
 			}
 			first := startFixture(t, f)
-			second, err := f.engine.Start(context.Background(), f.actor, other.ID, other.Version)
+			second, err := f.engine.Start(context.Background(), f.actor, StartRequest{JobID: other.ID, Version: other.Version, RequestID: "other-intent"})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -302,7 +303,7 @@ func TestStoppingOneRunLeavesConcurrentRunsOnTheSameHostsActive(t *testing.T) {
 				}
 			}
 			if cancelHost {
-				if err := f.engine.Cancel(context.Background(), f.actor, first.ID, f.hosts[0].ID); err != nil {
+				if err := f.engine.Cancel(context.Background(), f.actor, HostRequest{RunID: first.ID, HostID: f.hosts[0].ID}); err != nil {
 					t.Fatal(err)
 				}
 			} else {
@@ -373,7 +374,7 @@ func TestParallelOutcomeDoesNotDependOnHostCompletionOrder(t *testing.T) {
 					t.Fatalf("host %d status: %s, want %s", index, result.Hosts[index].Status, want)
 				}
 			}
-			if err := f.engine.Cancel(context.Background(), f.actor, run.ID, f.hosts[0].ID); !errors.Is(err, ErrInactive) {
+			if err := f.engine.Cancel(context.Background(), f.actor, HostRequest{RunID: run.ID, HostID: f.hosts[0].ID}); !errors.Is(err, ErrInactive) {
 				t.Fatalf("completed host accepted cancellation: %v", err)
 			}
 		})
@@ -412,10 +413,10 @@ func TestExecutionScopesRevocationAndStaleVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.engine.Start(ctx, actor, f.job.ID, 1); !errors.Is(err, store.ErrForbidden) {
+	if _, err := f.engine.Start(ctx, actor, StartRequest{JobID: f.job.ID, Version: 1, RequestID: "fixture-intent"}); !errors.Is(err, store.ErrForbidden) {
 		t.Fatalf("author scope executed script: %v", err)
 	}
-	if _, err := f.engine.Start(ctx, f.actor, f.job.ID, 2); !errors.Is(err, store.ErrJobChanged) {
+	if _, err := f.engine.Start(ctx, f.actor, StartRequest{JobID: f.job.ID, Version: 2, RequestID: "fixture-intent"}); !errors.Is(err, store.ErrJobChanged) {
 		t.Fatalf("stale version executed: %v", err)
 	}
 	key, token, err = auth.NewAPIKey(f.actor.User, "Runner", []string{store.ScopeRunsWrite}, time.Hour)
@@ -432,17 +433,17 @@ func TestExecutionScopesRevocationAndStaleVersion(t *testing.T) {
 	if err := f.db.RevokeLocalAPIKey(ctx, key.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.engine.Start(ctx, actor, f.job.ID, 1); !errors.Is(err, store.ErrUnauthorized) {
+	if _, err := f.engine.Start(ctx, actor, StartRequest{JobID: f.job.ID, Version: 1, RequestID: "fixture-intent"}); !errors.Is(err, store.ErrUnauthorized) {
 		t.Fatalf("revoked key executed: %v", err)
 	}
 	runs, err := f.db.Runs(ctx, f.actor, f.job.ID)
 	if err != nil || len(runs) != 0 {
 		t.Fatalf("unauthorized runs persisted: %+v %v", runs, err)
 	}
-	if err := f.engine.Input(ctx, f.actor, "missing", "missing", strings.Repeat("x", 4097)); !errors.Is(err, ErrInput) {
+	if err := f.engine.Input(ctx, f.actor, InputRequest{RunID: "missing", HostID: "missing", Data: strings.Repeat("x", 4097)}); !errors.Is(err, ErrInput) {
 		t.Fatal(err)
 	}
-	if err := f.engine.Cancel(ctx, f.actor, "missing", "missing"); !errors.Is(err, ErrInactive) {
+	if err := f.engine.Cancel(ctx, f.actor, HostRequest{RunID: "missing", HostID: "missing"}); !errors.Is(err, ErrInactive) {
 		t.Fatal(err)
 	}
 }
@@ -494,7 +495,7 @@ func TestOutputPaginationRetentionAndShutdown(t *testing.T) {
 	if result.Status != "cancelled" {
 		t.Fatal(result.Status)
 	}
-	if _, err := f.engine.Start(context.Background(), f.actor, f.job.ID, 1); !errors.Is(err, ErrInactive) {
+	if _, err := f.engine.Start(context.Background(), f.actor, StartRequest{JobID: f.job.ID, Version: 1, RequestID: "fixture-intent"}); !errors.Is(err, ErrInactive) {
 		t.Fatal(err)
 	}
 	if err := f.db.PurgeRuns(context.Background(), time.Now().Add(time.Hour).Unix()); err != nil {
@@ -512,7 +513,8 @@ func TestOutputPaginationRetentionAndShutdown(t *testing.T) {
 func TestInterruptedRunRecoveryAndCompletedFixtureDeletion(t *testing.T) {
 	f := newFixture(t, "sequential", true)
 	ctx := context.Background()
-	run, _, _, err := f.db.CreateRun(ctx, f.actor, strings.Repeat("a", 32), f.job.ID, f.job.Version)
+	runAdmission, err := f.db.AdmitRun(ctx, f.actor, store.RunAdmission{ID: strings.Repeat("a", 32), RequestID: "recovery-fixture", JobID: f.job.ID, Version: f.job.Version})
+	run := runAdmission.PublicRun()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -629,7 +631,7 @@ func TestQueuedCancellationAppliesFailurePolicyImmediately(t *testing.T) {
 			}
 			run := startFixture(t, f)
 			<-started
-			if err := f.engine.Cancel(context.Background(), f.actor, run.ID, f.hosts[1].ID); err != nil {
+			if err := f.engine.Cancel(context.Background(), f.actor, HostRequest{RunID: run.ID, HostID: f.hosts[1].ID}); err != nil {
 				t.Fatal(err)
 			}
 			if !stop {
@@ -701,7 +703,7 @@ func TestBrowserRequestCancellationDoesNotStopAdmittedRun(t *testing.T) {
 		return &code, nil
 	}
 	requestCtx, closeBrowser := context.WithCancel(ctx)
-	run, err := f.engine.Start(requestCtx, f.actor, f.job.ID, f.job.Version)
+	run, err := f.engine.Start(requestCtx, f.actor, StartRequest{JobID: f.job.ID, Version: f.job.Version, RequestID: "fixture-intent"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -717,7 +719,7 @@ func TestBrowserRequestCancellationDoesNotStopAdmittedRun(t *testing.T) {
 	inputCtx, closeInputPage := context.WithCancel(ctx)
 	inputResult := make(chan error, 1)
 	go func() {
-		inputResult <- f.engine.Input(inputCtx, f.actor, run.ID, f.hosts[0].ID, "Input after revisit\n")
+		inputResult <- f.engine.Input(inputCtx, f.actor, InputRequest{RunID: run.ID, HostID: f.hosts[0].ID, Data: "Input after revisit\n"})
 	}()
 	<-writing
 	closeInputPage()
@@ -775,7 +777,10 @@ func TestSudoPolicyRequiresJobAndHostAndIsSnapshotted(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			run, snapshot, connections, err := f.db.CreateRun(ctx, f.actor, "sudo-policy", f.job.ID, f.job.Version)
+			runAdmission, err := f.db.AdmitRun(ctx, f.actor, store.RunAdmission{ID: "sudo-policy", RequestID: "sudo-policy", JobID: f.job.ID, Version: f.job.Version})
+			run := runAdmission.PublicRun()
+			snapshot := runAdmission.(store.CreatedRun).Job
+			connections := runAdmission.(store.CreatedRun).Connections
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -15,6 +15,8 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"piped/internal/store"
+
 	"modernc.org/sqlite"
 	sqlite3 "modernc.org/sqlite/lib"
 )
@@ -45,7 +47,8 @@ func TestFailedSQLiteStartupConversionPreservesAllExistingData(t *testing.T) {
 	f := newFixture(t, "sequential", false)
 	f.engine.Close()
 	ctx := context.Background()
-	run, _, _, err := f.db.CreateRun(ctx, f.actor, "startup-preservation", f.job.ID, f.job.Version)
+	runAdmission, err := f.db.AdmitRun(ctx, f.actor, store.RunAdmission{ID: "startup-preservation", RequestID: "startup-preservation", JobID: f.job.ID, Version: f.job.Version})
+	run := runAdmission.PublicRun()
 	if err != nil {
 		t.Fatal(err)
 	}

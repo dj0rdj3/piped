@@ -6,10 +6,11 @@ import (
 	"errors"
 	"time"
 
+	"piped/internal/problem"
 	"piped/internal/secrets"
 )
 
-var ErrCredentialName = errors.New("credential name already exists")
+var ErrCredentialName = problem.New(problem.Conflict, "credential name already exists")
 
 // Credential contains only public metadata. Secret material is kept in a
 // separate database column and is never selected by UI-facing queries.
@@ -75,11 +76,18 @@ func (s *Store) Credentials(ctx context.Context, actor Actor) ([]Credential, err
 		return nil, err
 	}
 	defer tx.Rollback()
+	items, err := readCredentials(ctx, tx, actor, nil)
+	if err != nil {
+		return nil, err
+	}
+	return items, tx.Commit()
+}
+
+func readCredentials(ctx context.Context, tx *authorizedTransaction, actor Actor, ids []string) ([]Credential, error) {
 	rows, err := tx.QueryContext(ctx, `
 		SELECT id, name, public_key, fingerprint, algorithm, has_passphrase, created_at
 		FROM credentials
-		ORDER BY lower(name), name
-	`)
+		`+listIDFilter("id", ids)+` ORDER BY lower(name), name`, listIDArgs(ids)...)
 	if err != nil {
 		return nil, err
 	}
@@ -98,7 +106,7 @@ func (s *Store) Credentials(ctx context.Context, actor Actor) ([]Credential, err
 	if err := rows.Close(); err != nil {
 		return nil, err
 	}
-	return items, tx.Commit()
+	return items, nil
 }
 
 func credentialError(err error) error {
@@ -130,6 +138,9 @@ func (s *Store) CreateCredential(ctx context.Context, actor Actor, c Credential,
 	if err != nil {
 		return Credential{}, credentialError(err)
 	}
+	if err := refreshListEntry(ctx, tx, "credentials", c.ID); err != nil {
+		return Credential{}, err
+	}
 	return c, tx.Commit()
 }
 
@@ -150,6 +161,9 @@ func (s *Store) DeleteCredential(ctx context.Context, actor Actor, id string) er
 	if count != 1 {
 		return ErrNotFound
 	}
+	if err := refreshListEntry(ctx, tx, "credentials", id); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 
@@ -169,6 +183,18 @@ func (s *Store) RenameCredential(ctx context.Context, actor Actor, id, name stri
 	}
 	if n != 1 {
 		return ErrNotFound
+	}
+	if err := refreshListEntry(ctx, tx, "credentials", id); err != nil {
+		return err
+	}
+	hostIDs, err := tx.queryStrings(ctx, "SELECT id FROM hosts WHERE credential_id = ?", id)
+	if err != nil {
+		return err
+	}
+	for _, hostID := range hostIDs {
+		if err := refreshListEntry(ctx, tx, "hosts", hostID); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }

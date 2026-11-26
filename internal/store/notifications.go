@@ -7,6 +7,8 @@ import (
 	"errors"
 	"slices"
 	"strings"
+
+	"piped/internal/problem"
 )
 
 const (
@@ -16,12 +18,12 @@ const (
 )
 
 var (
-	ErrNotificationSecret   = errors.New("provide a value for each new notification secret")
-	ErrNotificationType     = errors.New("notification target type cannot be changed")
-	ErrNotificationChanged  = errors.New("notification target changed; refresh and try again")
-	ErrNotificationInUse    = errors.New("notification target is assigned to a job; remove it from the job first")
-	ErrJobNotificationLimit = errors.New("select at most 64 notification targets")
-	ErrJobNotification      = errors.New("a notification target no longer exists; refresh and try again")
+	ErrNotificationSecret   = problem.New(problem.Invalid, "provide a value for each new notification secret")
+	ErrNotificationType     = problem.New(problem.Invalid, "notification target type cannot be changed")
+	ErrNotificationChanged  = problem.New(problem.Conflict, "notification target changed; refresh and try again")
+	ErrNotificationInUse    = problem.New(problem.Conflict, "notification target is assigned to a job; remove it from the job first")
+	ErrJobNotificationLimit = problem.New(problem.Invalid, "select at most 64 notification targets")
+	ErrJobNotification      = problem.New(problem.Invalid, "a notification target no longer exists; refresh and try again")
 )
 
 type NotificationEndpoint struct {
@@ -73,7 +75,15 @@ func (s *Store) NotificationTargets(ctx context.Context, actor Actor) ([]Notific
 		return nil, err
 	}
 	defer tx.Rollback()
-	rows, err := tx.QueryContext(ctx, `SELECT `+notificationColumns+` FROM notification_targets ORDER BY lower(name), name, id`)
+	targets, err := readNotifications(ctx, tx, actor, nil)
+	if err != nil {
+		return nil, err
+	}
+	return targets, tx.Commit()
+}
+
+func readNotifications(ctx context.Context, tx *authorizedTransaction, actor Actor, ids []string) ([]NotificationTarget, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT `+notificationColumns+` FROM notification_targets`+listIDFilter("id", ids)+` ORDER BY lower(name), name, id`, listIDArgs(ids)...)
 	if err != nil {
 		return nil, err
 	}
@@ -94,7 +104,7 @@ func (s *Store) NotificationTargets(ctx context.Context, actor Actor) ([]Notific
 	if err := rows.Close(); err != nil {
 		return nil, err
 	}
-	rows, err = tx.QueryContext(ctx, `SELECT target_id, name FROM notification_secrets ORDER BY target_id, name`)
+	rows, err = tx.QueryContext(ctx, `SELECT target_id, name FROM notification_secrets`+listIDFilter("target_id", ids)+` ORDER BY target_id, name`, listIDArgs(ids)...)
 	if err != nil {
 		return nil, err
 	}
@@ -113,7 +123,7 @@ func (s *Store) NotificationTargets(ctx context.Context, actor Actor) ([]Notific
 	if err := rows.Close(); err != nil {
 		return nil, err
 	}
-	return targets, tx.Commit()
+	return targets, nil
 }
 
 // SaveNotificationTarget resolves preserved secrets and validates the complete
@@ -180,6 +190,9 @@ func (s *Store) SaveNotificationTarget(ctx context.Context, actor Actor, target 
 	}
 	slices.Sort(target.SecretNames)
 	target.Secrets = nil
+	if err := refreshListEntry(ctx, tx, "notifications", target.ID); err != nil {
+		return target, err
+	}
 	return target, tx.Commit()
 }
 
@@ -213,7 +226,7 @@ func resolveNotificationSecrets(previous, changes []NotificationSecret) ([]Notif
 	return changes, nil
 }
 
-func notificationSecretValues(ctx context.Context, tx *transaction, id string) ([]NotificationSecret, error) {
+func notificationSecretValues(ctx context.Context, tx writeTransaction, id string) ([]NotificationSecret, error) {
 	rows, err := tx.QueryContext(ctx, `SELECT name, encrypted_value FROM notification_secrets WHERE target_id = ? ORDER BY name`, id)
 	if err != nil {
 		return nil, err
@@ -253,14 +266,17 @@ func (s *Store) DeleteNotificationTarget(ctx context.Context, actor Actor, id st
 		}
 		return err
 	}
+	if err := refreshListEntry(ctx, tx, "notifications", id); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 
-func jobNotificationIDs(ctx context.Context, tx *transaction, jobID string) ([]string, error) {
+func jobNotificationIDs(ctx context.Context, tx writeTransaction, jobID string) ([]string, error) {
 	return tx.queryStrings(ctx, `SELECT target_id FROM job_notification_targets WHERE job_id = ? ORDER BY target_id`, jobID)
 }
 
-func saveJobNotifications(ctx context.Context, tx *transaction, job *Job, create bool, source *JobCopy) error {
+func saveJobNotifications(ctx context.Context, tx writeTransaction, job *Job, create bool, source *JobCopy) error {
 	if job.NotificationTargetIDs == nil {
 		var err error
 		switch {
@@ -294,7 +310,7 @@ func saveJobNotifications(ctx context.Context, tx *transaction, job *Job, create
 }
 
 // notificationSnapshot runs inside admission, so edits cannot redirect an active run.
-func notificationSnapshot(ctx context.Context, tx *transaction, jobID string) ([]NotificationTarget, error) {
+func notificationSnapshot(ctx context.Context, tx writeTransaction, jobID string) ([]NotificationTarget, error) {
 	rows, err := tx.QueryContext(ctx, `SELECT n.id, n.name, n.method, n.body, n.content_type, n.enabled, n.default_enabled, n.version, n.target_type, n.endpoint FROM notification_targets n JOIN job_notification_targets j ON j.target_id = n.id WHERE j.job_id = ? AND n.enabled = 1 ORDER BY n.id`, jobID)
 	if err != nil {
 		return nil, err
@@ -326,7 +342,7 @@ func notificationSnapshot(ctx context.Context, tx *transaction, jobID string) ([
 // NotificationOutput is internal worker access to already masked, persisted output.
 // Bound memory even for very large logs and a single unterminated line.
 func (s *Store) NotificationOutput(ctx context.Context, runID, hostID string) (string, error) {
-	reader := outputReader{store: s, ctx: ctx, runID: runID, hostID: hostID, descending: true}
+	reader := outputReader{source: s.db, ctx: ctx, runID: runID, hostID: hostID, descending: true}
 	chunks, _, err := outputPage(&reader, 0, 0)
 	if err != nil {
 		return "", err

@@ -81,14 +81,15 @@ func (e *Engine) runSchedules(at time.Time) {
 		random := make([]byte, 16)
 		_, _ = rand.Read(random)
 		admission, cancel := e.operationContext(e.ctx)
-		run, job, connections, err := e.db.CreateScheduledRun(admission, hex.EncodeToString(random), candidate.ID, candidate.Version, minute, e.now)
+		created, err := e.admissions.CreateScheduledRun(admission, hex.EncodeToString(random), candidate.ID, candidate.Version, minute, e.now)
 		cancel()
 		if err == nil {
-			e.launch(run, job, connections)
+			e.launch(created.Run, created.Job, created.Connections)
 		} else {
 			e.observeOwnership(err)
-			if run.ID != "" && !e.ownershipLost.Load() {
-				e.reconcileAdmission(run.ID)
+			var uncertain *store.UncertainCommit
+			if errors.As(err, &uncertain) && !e.ownershipLost.Load() {
+				e.reconcileAdmission(uncertain.RunID)
 			}
 		}
 		e.mu.Unlock()

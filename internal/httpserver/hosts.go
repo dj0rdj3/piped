@@ -2,7 +2,6 @@ package httpserver
 
 import (
 	"net/http"
-	"strings"
 
 	"piped/internal/hosts"
 	"piped/internal/httpserver/response"
@@ -10,13 +9,7 @@ import (
 )
 
 func (s *Server) listHosts(w http.ResponseWriter, r *http.Request, actor store.Actor) error {
-	items, err := s.config.Hosts.List(r.Context(), actor)
-	if err != nil {
-		return response.HostFailure(err)
-	}
-	return listResponse(w, r, "hosts", items, func(item store.Host) listEntry {
-		return listEntry{id: item.ID, name: item.Name, search: strings.Join(append([]string{item.Name, item.Address, item.Username, item.CredentialName}, item.Tags...), " "), tags: item.Tags}
-	}, nil)
+	return listResponse(w, r, actor, "hosts", s.auth.Store.HostsPage, nil)
 }
 
 func (s *Server) saveHost(w http.ResponseWriter, r *http.Request, actor store.Actor) error {

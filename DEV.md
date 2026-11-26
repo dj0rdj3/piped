@@ -86,7 +86,10 @@ Run Make commands from the repository root.
 
 Docker commands require Docker Engine with Buildx/BuildKit. Container checks clean up
 their disposable resources. Setup reports go to `test-results/setup-containers.json`;
-the database matrix writes `.cache/database-checks.json`.
+the database matrix writes `.cache/database-checks.json`. Use `go run
+./scripts/check-databases -parallel 4 -cpus 3 -memory 1536m postgres:18 mariadb:11.8
+mysql:8.4` for a bounded family check; adjust limits to observed headroom.
+Add `-run 'TestName'` for focused regressions; reports record the selection.
 Keep build and dependency caches between normal runs. Use `make clean-cache` only
 occasionally when caches need repair or have grown excessively, or when requested.
 Cleanup commands preserve `.tools`, `.env`, and application data.

@@ -2,6 +2,8 @@ package execution
 
 import (
 	"context"
+	"log/slog"
+	"sync"
 	"time"
 
 	"piped/internal/cron"
@@ -80,4 +82,87 @@ func (e *Engine) maintenanceWindow(ctx context.Context) (bool, error) {
 		}
 	}
 	return true, nil
+}
+
+// maintenanceWorker owns retention, output compression and space reclamation.
+// All goroutines join before execution ownership and database storage are closed.
+type maintenanceWorker struct {
+	db            *store.Store
+	archiveReady  chan struct{}
+	retentionDays int
+	reclaim       func()
+}
+
+func (m *maintenanceWorker) start(ctx context.Context, logger *slog.Logger, reclaimer *store.SQLiteReclaimer, workers *sync.WaitGroup) {
+	if reclaimer != nil {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			defer reclaimer.Close()
+			timer := time.NewTimer(0)
+			defer timer.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-timer.C:
+				}
+				more, err := reclaimer.Step(ctx)
+				delay := time.Second
+				if err != nil && ctx.Err() == nil {
+					logger.Error("SQLite space reclamation failed", "error", err)
+					delay = time.Minute
+				} else if more {
+					delay = 50 * time.Millisecond
+				}
+				timer.Reset(delay)
+			}
+		}()
+	}
+	workers.Add(2)
+	go func() {
+		defer workers.Done()
+		retry := time.NewTicker(time.Minute)
+		defer retry.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-m.archiveReady:
+			case <-retry.C:
+			}
+			compression, cancel := context.WithTimeout(ctx, persistenceTimeout)
+			err := m.db.CompressCompletedOutput(compression)
+			cancel()
+			if err != nil && ctx.Err() == nil {
+				logger.Error("execution log compression failed", "error", err)
+			}
+			m.reclaim()
+
+		}
+	}()
+	go func() {
+		defer workers.Done()
+		ticker := time.NewTicker(time.Hour)
+		defer ticker.Stop()
+		for {
+			retention, cancel := context.WithTimeout(ctx, persistenceTimeout)
+			err := m.db.PurgeRuns(retention, time.Now().AddDate(0, 0, -m.retentionDays).Unix())
+			cancel()
+			if err != nil && ctx.Err() == nil {
+				logger.Error("execution retention failed", "error", err)
+			}
+			// A single worker drains persisted completions. Coalesce wakeups rather
+			// than allocating another goroutine or queued ID for every finished host.
+			select {
+			case m.archiveReady <- struct{}{}:
+			default:
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
 }

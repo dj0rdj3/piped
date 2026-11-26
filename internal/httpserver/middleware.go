@@ -4,11 +4,12 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/url"
 	"strings"
-	"time"
 
 	"piped/internal/httpserver/development"
 	"piped/internal/httpserver/response"
+	"piped/internal/lifecycle"
 	"piped/internal/store"
 )
 
@@ -17,6 +18,7 @@ const contentSecurityPolicy = "default-src 'self'; " +
 	"object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
 
 func (s *Server) protect(next http.Handler) http.Handler {
+	origin, _ := url.Parse(s.config.Origin) // Validated before constructing the server.
 	// Some browsers do not include ws/wss in connect-src 'self'. Limit the
 	// explicit WebSocket source to the configured public origin.
 	socketOrigin := "ws" + strings.TrimPrefix(s.config.Origin, "http")
@@ -31,10 +33,16 @@ func (s *Server) protect(next http.Handler) http.Handler {
 			w.Header().Set("Strict-Transport-Security", "max-age=31536000")
 		}
 		w.Header().Set("Cache-Control", "no-store")
+		// Enforce the same host boundary for browser routes, assets and bearer
+		// transports. Forwarded headers cannot authorize another request host.
+		if !strings.EqualFold(r.Host, origin.Host) && !strings.EqualFold(r.Host, s.config.Listen) {
+			response.JSON(w, http.StatusForbidden, map[string]string{"error": "untrusted request host"})
+			return
+		}
 		if strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/mcp" {
 			// Socket handshakes share this budget. Upgraded terminals manage
 			// their own lifetime and bound each storage/control operation.
-			ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+			ctx, cancel := context.WithTimeout(r.Context(), lifecycle.RequestTimeout)
 			defer cancel()
 			r = r.WithContext(ctx)
 		}

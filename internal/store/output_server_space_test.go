@@ -107,7 +107,7 @@ func TestOutputArchiveServerDiskUsage(t *testing.T) {
 		return result
 	}
 	stages := map[string]space{"baseline": measure()}
-	if _, _, _, err := db.CreateRun(ctx, actor, "archive", job.ID, job.Version); err != nil {
+	if _, err := db.AdmitRun(ctx, actor, RunAdmission{ID: "archive", RequestID: "archive", JobID: job.ID, Version: job.Version}); err != nil {
 		t.Fatal(err)
 	}
 	const size = 8 * 1024 * 1024
@@ -135,7 +135,7 @@ func TestOutputArchiveServerDiskUsage(t *testing.T) {
 	if err := db.FinishRun(ctx, "archive", "succeeded"); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, _, err := db.CreateRun(ctx, actor, "active", job.ID, job.Version); err != nil {
+	if _, err := db.AdmitRun(ctx, actor, RunAdmission{ID: "active", RequestID: "active", JobID: job.ID, Version: job.Version}); err != nil {
 		t.Fatal(err)
 	}
 	beforeBusy := measure()

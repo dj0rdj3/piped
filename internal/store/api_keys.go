@@ -101,12 +101,22 @@ func (s *Store) RevokeLocalAPIKey(ctx context.Context, id string) error {
 }
 
 func (s *Store) PurgeAPIKeys(ctx context.Context, now time.Time) error {
-	_, err := s.db.ExecContext(ctx, "DELETE FROM api_keys WHERE expires_at <= ?", now.Unix())
-	return err
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, "DELETE FROM api_keys WHERE expires_at <= ?", now.Unix()); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM list_entries WHERE kind = 'keys' AND id NOT IN (SELECT id FROM api_keys)"); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // Personal key management requires a fresh browser session, never a bearer key.
-func (s *Store) beginKeyManagement(ctx context.Context, actor Actor) (*transaction, error) {
+func (s *Store) beginKeyManagement(ctx context.Context, actor Actor) (*authorizedTransaction, error) {
 	if actor.APIKeyHash != "" || actor.SessionHash == "" {
 		return nil, ErrForbidden
 	}
@@ -119,8 +129,16 @@ func (s *Store) UserAPIKeys(ctx context.Context, actor Actor) ([]APIKey, error) 
 		return nil, err
 	}
 	defer tx.Rollback()
+	keys, err := readKeys(ctx, tx, actor, nil)
+	if err != nil {
+		return nil, err
+	}
+	return keys, tx.Commit()
+}
+
+func readKeys(ctx context.Context, tx *authorizedTransaction, actor Actor, ids []string) ([]APIKey, error) {
 	rows, err := tx.QueryContext(ctx, `SELECT id, name, scopes, created_at, COALESCE(expires_at, 0) FROM api_keys
-		WHERE user_id = ? AND purpose = 'production' ORDER BY created_at DESC, id`, actor.ID)
+		WHERE user_id = ? AND purpose = 'production'`+listIDCondition("id", ids)+` ORDER BY created_at DESC, id`, append([]any{actor.ID}, listIDArgs(ids)...)...)
 	if err != nil {
 		return nil, err
 	}
@@ -153,6 +171,9 @@ func (s *Store) CreateUserAPIKey(ctx context.Context, actor Actor, key APIKey, h
 	if err != nil {
 		return err
 	}
+	if err := refreshListEntry(ctx, tx, "keys", key.ID); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 
@@ -162,6 +183,9 @@ func (s *Store) RevokeUserAPIKey(ctx context.Context, actor Actor, id string) er
 		return err
 	}
 	defer tx.Rollback()
+	if !validLookupID(id) {
+		return ErrNotFound
+	}
 	result, err := tx.ExecContext(ctx, "DELETE FROM api_keys WHERE id = ? AND user_id = ? AND purpose = 'production'", id, actor.ID)
 	if err != nil {
 		return err
@@ -172,6 +196,9 @@ func (s *Store) RevokeUserAPIKey(ctx context.Context, actor Actor, id string) er
 	}
 	if count == 0 {
 		return ErrNotFound
+	}
+	if err := refreshListEntry(ctx, tx, "keys", id); err != nil {
+		return err
 	}
 	return tx.Commit()
 }

@@ -96,6 +96,13 @@ func TestAPIKeyPermissionsAndRevocation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	originalPurpose := actor.APIKeyPurpose
+	actor.APIKeyPurpose = "production"
+	if _, err := s.Credentials(ctx, actor); !errors.Is(err, ErrUnauthorized) {
+		t.Fatal("forged key namespace crossed transactional authorization", err)
+	}
+	actor.APIKeyPurpose = originalPurpose
+
 	if err := s.Authorize(ctx, actor, ScopeUsersRead); err != nil {
 		t.Fatal(err)
 	}

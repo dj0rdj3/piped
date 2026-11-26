@@ -26,7 +26,8 @@ func TestArchivedOutputThroughDevelopmentAPIAndMCP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	run, _, _, err := h.store.CreateRun(ctx, actor, "archive-tools", job.ID, job.Version)
+	runAdmission, err := h.store.AdmitRun(ctx, actor, store.RunAdmission{ID: "archive-tools", RequestID: "archive-tools", JobID: job.ID, Version: job.Version})
+	run := runAdmission.PublicRun()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +87,7 @@ func TestExecutionDevelopmentScopesAndToolDiscovery(t *testing.T) {
 	if strings.Contains(string(encoded), `"run_job"`) {
 		t.Fatal("definition-author key received execution capability")
 	}
-	expect(t, h.bearerRequest("POST", "/api/development/v1/jobs/missing/run", authorToken, map[string]int{"version": 1}, nil), 403)
+	expect(t, h.bearerRequest("POST", "/api/development/v1/jobs/missing/run", authorToken, map[string]any{"version": 1, "request_id": "fixture-intent"}, nil), 403)
 	_, readToken := h.issueKey(t, store.ScopeRunsRead)
 	encoded, _ = json.Marshal(h.mcpRequest(t, readToken, "tools/list", map[string]any{}))
 	for _, name := range []string{"list_runs", "get_run", "read_run_output"} {
@@ -106,7 +107,93 @@ func TestExecutionDevelopmentScopesAndToolDiscovery(t *testing.T) {
 		}
 	}
 	expect(t, h.bearerRequest("GET", "/api/development/v1/runs/missing", writeToken, nil, nil), 403)
-	expect(t, h.bearerRequest("POST", "/api/development/v1/jobs/missing/run", writeToken, map[string]int{"version": 1}, nil), 404)
+	expect(t, h.bearerRequest("POST", "/api/development/v1/jobs/missing/run", writeToken, map[string]any{"version": 1, "request_id": "fixture-intent"}, nil), 404)
 	expect(t, h.bearerRequest("GET", "/api/development/v1/runs/missing", readToken, nil, nil), 404)
 	expect(t, h.bearerRequest("DELETE", "/api/development/v1/runs/missing", readToken, nil, nil), 403)
+}
+
+func TestMCPAndHTTPShareAdmissionAndOutputCommands(t *testing.T) {
+	h := newHarness(t, false, true)
+	cookie := h.login(t, "admin", testPassword)
+	input := hostBody()
+	input["address"], input["port"] = "127.0.0.1", 1
+	host := responseHost(t, h.request("POST", "/api/hosts", input, cookie))
+	job := responseJob(t, h.request("POST", "/api/jobs", jobBody(host.ID), cookie))
+	_, token := h.issueKey(t, store.ScopeRunsRead, store.ScopeRunsWrite)
+	// Discover the schema as a real client does before using request identities.
+	tools, _ := json.Marshal(h.mcpRequest(t, token, "tools/list", map[string]any{}))
+	if !strings.Contains(string(tools), `"request_id"`) {
+		t.Fatal("admission identity missing from MCP schema")
+	}
+	call := func(name string, args map[string]any) map[string]any {
+		t.Helper()
+		reply := h.mcpRequest(t, token, "tools/call", map[string]any{"name": name, "arguments": args})
+		result, ok := reply["result"].(map[string]any)
+		if !ok {
+			t.Fatalf("missing tool result: %v", reply)
+		}
+		return result
+	}
+	args := map[string]any{"job_id": job.ID, "version": job.Version, "request_id": "shared-mcp-admission"}
+	for range 2 {
+		result := call("run_job", args)
+		if failed, _ := result["isError"].(bool); failed {
+			t.Fatalf("admission: %v", result)
+		}
+	}
+	response := h.bearerRequest("POST", "/api/development/v1/jobs/"+job.ID+"/run", token, args, nil)
+	expect(t, response, 201)
+	if !containsRunCount(t, h.request("GET", "/api/jobs/"+job.ID+"/runs", nil, cookie), 1) {
+		t.Fatal("transport switch replayed execution")
+	}
+	var started struct {
+		Run store.Run `json:"run"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &started); err != nil {
+		t.Fatal(err)
+	}
+	for _, invalid := range []map[string]any{
+		{"run_id": started.Run.ID, "host_id": host.ID, "after": -1},
+		{"run_id": started.Run.ID, "host_id": host.ID, "after": 1, "tail": true},
+	} {
+		result := call("read_run_output", invalid)
+		if failed, _ := result["isError"].(bool); !failed {
+			t.Fatalf("invalid cursor accepted: %v", result)
+		}
+	}
+	expect(t, h.bearerRequest("GET", "/api/development/v1/runs/"+started.Run.ID+"/hosts/"+host.ID+"/output?after=-1", token, nil, nil), 400)
+	args["version"] = job.Version + 1
+	if failed, _ := call("run_job", args)["isError"].(bool); !failed {
+		t.Fatal("MCP reused identity for a different fingerprint")
+	}
+}
+
+func TestMalformedExecutionIDsAreClientErrorsAcrossKeyAPIsAndMCP(t *testing.T) {
+	h := newHarness(t, false, true)
+	cookie := h.login(t, "admin", testPassword)
+	_, production := h.createPersonalKey(t, cookie, store.ScopeRunsRead, store.ScopeRunsWrite)
+	_, development := h.issueKey(t, store.ScopeRunsRead, store.ScopeRunsWrite, store.ScopeCredentialsWrite)
+	for _, api := range []struct{ prefix, token string }{{"/api/v1", production}, {"/api/development/v1", development}} {
+		for _, path := range []string{"/jobs/bad%00id/runs", "/runs/bad%00id", "/runs/valid/hosts/bad%00id/output"} {
+			expect(t, h.bearerRequest("GET", api.prefix+path, api.token, nil, nil), 400)
+		}
+		expect(t, h.bearerRequest("POST", api.prefix+"/jobs/bad%00id/run", api.token, map[string]any{"version": 1, "request_id": "malformed-id"}, nil), 400)
+	}
+	for _, call := range []struct {
+		name string
+		args map[string]any
+	}{
+		{"list_runs", map[string]any{"job_id": "bad\x00id"}},
+		{"get_run", map[string]any{"run_id": "bad\x00id"}},
+		{"read_run_output", map[string]any{"run_id": "valid", "host_id": "bad\x00id"}},
+		{"run_job", map[string]any{"job_id": "bad\x00id", "version": 1, "request_id": "malformed-id"}},
+		{"rename_credential", map[string]any{"id": "bad\x00id", "name": "Valid name"}},
+		{"delete_credential", map[string]any{"id": "bad\x00id"}},
+	} {
+		response := h.mcpRequest(t, development, "tools/call", map[string]any{"name": call.name, "arguments": call.args})
+		encoded, err := json.Marshal(response["result"])
+		if err != nil || !strings.Contains(string(encoded), `"isError":true`) || (!strings.Contains(string(encoded), "not found") && !strings.Contains(string(encoded), "invalid credential ID") && !strings.Contains(string(encoded), "invalid execution request")) {
+			t.Fatalf("malformed identifier was not a sanitized client error for %s: %s", call.name, encoded)
+		}
+	}
 }

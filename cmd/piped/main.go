@@ -23,6 +23,7 @@ import (
 	"piped/internal/hosts"
 	"piped/internal/httpserver"
 	"piped/internal/jobs"
+	"piped/internal/lifecycle"
 	"piped/internal/notifications"
 	"piped/internal/secrets"
 	"piped/internal/store"
@@ -70,7 +71,7 @@ func run(args []string, input io.Reader, output io.Writer) error {
 	// The build constant also removes key issuance from the production binary;
 	// rejecting the command in parseOptions alone would leave this code linked.
 	if httpserver.DevelopmentBuild && options.command == "api-key" {
-		ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		ctx, cancel := context.WithTimeout(ctx, lifecycle.StorageTimeout)
 		defer cancel()
 		if options.keyRevoke != "" {
 			decoded, err := hex.DecodeString(options.keyRevoke)
@@ -111,14 +112,14 @@ func run(args []string, input io.Reader, output io.Writer) error {
 		}
 		if err != nil {
 			// Clean up keys whose token could not be written.
-			cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), lifecycle.StorageTimeout)
 			defer cancel()
 			err = errors.Join(err, db.RevokeLocalAPIKey(cleanupCtx, key.ID))
 		}
 		return err
 	}
 	if options.command == "register" {
-		lookup, cancel := context.WithTimeout(ctx, 5*time.Second)
+		lookup, cancel := context.WithTimeout(ctx, lifecycle.StorageTimeout)
 		initialized, err := db.HasUsers(lookup)
 		cancel()
 		if err != nil {
@@ -151,7 +152,7 @@ func run(args []string, input io.Reader, output io.Writer) error {
 			return errors.New("password input too long")
 		}
 		secret := strings.TrimSuffix(strings.TrimSuffix(string(password), "\n"), "\r")
-		setup, cancel := context.WithTimeout(ctx, 5*time.Second)
+		setup, cancel := context.WithTimeout(ctx, lifecycle.StorageTimeout)
 		u, err := a.InitAdmin(setup, options.username, secret)
 		cancel()
 		if err != nil {
@@ -165,7 +166,7 @@ func run(args []string, input io.Reader, output io.Writer) error {
 		return err
 	}
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
-	setup, cancelSetup := context.WithTimeout(ctx, 15*time.Second)
+	setup, cancelSetup := context.WithTimeout(ctx, lifecycle.StartupTimeout)
 	defer cancelSetup()
 	credentialService, err := credentials.New(setup, db, configuration.Vault)
 	if err != nil {
@@ -227,8 +228,8 @@ func run(args []string, input io.Reader, output io.Writer) error {
 	server := &http.Server{
 		Addr:              configuration.ListenAddress,
 		Handler:           handler,
-		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       15 * time.Second,
+		ReadHeaderTimeout: lifecycle.HTTPHeaderTimeout,
+		ReadTimeout:       lifecycle.RequestTimeout,
 		WriteTimeout:      30 * time.Second,
 		IdleTimeout:       60 * time.Second,
 		MaxHeaderBytes:    16 * 1024,
@@ -254,7 +255,7 @@ func serveHTTP(ctx context.Context, cancel context.CancelFunc, server *http.Serv
 	shutdownDone := make(chan struct{})
 	context.AfterFunc(ctx, func() {
 		defer close(shutdownDone)
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), lifecycle.HTTPShutdownTimeout)
 		defer cancel()
 		if err := server.Shutdown(shutdownCtx); err != nil {
 			logger.Error("graceful shutdown failed", "error", err)

@@ -15,7 +15,7 @@ func TestWorkspaceDirectEntryRoutes(t *testing.T) {
 	h := newHarness(t, false)
 	for _, path := range []string{"/api-keys", "/api-keys/", "/", "/login", "/login/", "/login?next=%2Fcredentials", "/users", "/users/", "/credentials", "/credentials/", "/hosts", "/hosts/", "/hosts?from=bookmark", "/jobs", "/jobs/", "/jobs?from=bookmark", "/users?from=bookmark", "/credentials?from=bookmark"} {
 		for _, method := range []string{"GET", "HEAD"} {
-			r := httptest.NewRequest(method, path, nil)
+			r := httptest.NewRequest(method, h.origin+path, nil)
 			w := httptest.NewRecorder()
 			h.handler.ServeHTTP(w, r)
 			expect(t, w, 200)
@@ -93,7 +93,7 @@ func TestRoutingAndAuthenticationFailuresKeepSecurityHeaders(t *testing.T) {
 	request.Header.Set("X-Forwarded-Proto", "http")
 	w := httptest.NewRecorder()
 	h.handler.ServeHTTP(w, request)
-	expect(t, w, 200)
+	expect(t, w, 403)
 	if !strings.Contains(w.Header().Get("Content-Security-Policy"), "wss://piped.example") || strings.Contains(w.Header().Get("Content-Security-Policy"), "other.example") {
 		t.Fatal("request headers changed the configured security policy")
 	}

@@ -59,7 +59,7 @@ func TestJobHTTPCRUDAndSharedAccess(t *testing.T) {
 	expect(t, h.request("DELETE", path, map[string]any{"version": 1}, cookie), 409)
 	expect(t, h.request("DELETE", path, map[string]any{"version": 2}, cookie), 204)
 	expect(t, h.request("DELETE", path, map[string]any{"version": 2}, cookie), 404)
-	expect(t, h.request("POST", path+"/run", map[string]int{"version": 2}, cookie), 404)
+	expect(t, h.request("POST", path+"/run", map[string]any{"version": 2, "request_id": "fixture-intent"}, cookie), 404)
 	expect(t, h.request("GET", "/api/jobs", nil, other), 200)
 }
 func TestJobHTTPAuthenticationAndValidation(t *testing.T) {
@@ -74,14 +74,14 @@ func TestJobHTTPAuthenticationAndValidation(t *testing.T) {
 		}
 		body := jobBody(strings.Repeat("b", 32))
 		expect(t, h.request(method, target, body, nil), 401)
-		r := httptest.NewRequest(method, target, strings.NewReader(`{}`))
+		r := httptest.NewRequest(method, h.origin+target, strings.NewReader(`{}`))
 		r.AddCookie(cookie)
 		w := httptest.NewRecorder()
 		h.handler.ServeHTTP(w, r)
 		expect(t, w, 403)
 	}
 	for _, raw := range []string{`null`, `[]`, `{} {}`, `{"script":true}`, `{"unknown":"value"}`, `{"script":"` + strings.Repeat("s", 1024*1024) + `"}`} {
-		r := httptest.NewRequest("POST", "/api/jobs", strings.NewReader(raw))
+		r := httptest.NewRequest("POST", h.origin+"/api/jobs", strings.NewReader(raw))
 		r.AddCookie(cookie)
 		r.Header.Set("Content-Type", "application/json")
 		r.Header.Set("X-Piped-Request", "1")
@@ -147,7 +147,7 @@ func TestJobHTTPTagTargetsAndEmptyRunError(t *testing.T) {
 	if len(job.HostIDs) != 0 || len(job.HostTags) != 1 || job.HostTags[0] != "future" {
 		t.Fatalf("lost tag-only targets: %+v", job)
 	}
-	w = h.request("POST", "/api/jobs/"+job.ID+"/run", map[string]int64{"version": job.Version}, cookie)
+	w = h.request("POST", "/api/jobs/"+job.ID+"/run", map[string]any{"version": job.Version, "request_id": "fixture-intent"}, cookie)
 	expect(t, w, 400)
 	if !strings.Contains(w.Body.String(), "job targets must match") {
 		t.Fatal("missing target error was not public", w.Body.String())

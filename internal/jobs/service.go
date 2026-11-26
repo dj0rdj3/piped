@@ -12,19 +12,22 @@ import (
 	"unicode/utf8"
 
 	"piped/internal/cron"
+	"piped/internal/problem"
 	"piped/internal/secrets"
 	"piped/internal/store"
 )
 
 const MaxScriptBytes = 64 * 1024
 
-var ErrInput = errors.New("invalid job")
+var ErrInput = problem.New(problem.Invalid, "invalid job")
 
 type InputError struct{ Message string }
 
-func (e *InputError) Error() string { return e.Message }
-func (e *InputError) Unwrap() error { return ErrInput }
-func invalid(message string) error  { return &InputError{Message: message} }
+func (e *InputError) Error() string    { return e.Message }
+func (e *InputError) Unwrap() error    { return ErrInput }
+func (*InputError) Kind() problem.Kind { return problem.Invalid }
+
+func invalid(message string) error { return &InputError{Message: message} }
 
 type Service struct {
 	store *store.Store

@@ -84,14 +84,14 @@ func TestHostHTTPAuthenticationAndValidation(t *testing.T) {
 			target = "/api/hosts"
 		}
 		expect(t, h.request(method, target, hostBody(), nil), 401)
-		r := httptest.NewRequest(method, target, strings.NewReader(`{}`))
+		r := httptest.NewRequest(method, h.origin+target, strings.NewReader(`{}`))
 		r.AddCookie(cookie)
 		w := httptest.NewRecorder()
 		h.handler.ServeHTTP(w, r)
 		expect(t, w, 403)
 	}
 	for _, raw := range []string{`null`, `[]`, `{} {}`, `{"name":true}`, `{"unknown":"secret"}`, `{"password":"` + strings.Repeat("s", 17000) + `"}`} {
-		r := httptest.NewRequest("POST", "/api/hosts", strings.NewReader(raw))
+		r := httptest.NewRequest("POST", h.origin+"/api/hosts", strings.NewReader(raw))
 		r.AddCookie(cookie)
 		r.Header.Set("Content-Type", "application/json")
 		r.Header.Set("X-Piped-Request", "1")

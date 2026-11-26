@@ -102,6 +102,7 @@ func New(a *auth.Service, c Config) (http.Handler, error) {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, r *http.Request) { response.JSON(w, 200, map[string]string{"status": "ok"}) })
+	mux.HandleFunc("GET /api/ready", s.readiness)
 	mux.HandleFunc("POST /api/auth/login", s.endpoint(s.login, false))
 	mux.HandleFunc("POST /api/auth/logout", s.endpoint(s.logout, false))
 	mux.HandleFunc("GET /api/auth/me", s.endpoint(s.me, true))

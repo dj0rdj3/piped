@@ -26,16 +26,16 @@ func TestExecutionHTTPAuthorizationHistoryAndValidation(t *testing.T) {
 	expect(t, w, 201)
 	job := responseJob(t, w)
 	path := "/api/jobs/" + job.ID + "/run"
-	expect(t, h.request("POST", path, map[string]int{"version": 1}, nil), 401)
-	cross := httptest.NewRequest("POST", path, strings.NewReader(`{"version":1}`))
+	expect(t, h.request("POST", path, map[string]any{"version": 1, "request_id": "fixture-intent"}, nil), 401)
+	cross := httptest.NewRequest("POST", h.origin+path, strings.NewReader(`{"version":1}`))
 	cross.AddCookie(cookie)
 	cross.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
 	h.handler.ServeHTTP(response, cross)
 	expect(t, response, 403)
-	expect(t, h.request("POST", path, map[string]int{"version": 2}, cookie), 409)
-	expect(t, h.request("POST", path, map[string]int{"version": 0}, cookie), 400)
-	w = h.request("POST", path, map[string]int{"version": 1}, cookie)
+	expect(t, h.request("POST", path, map[string]any{"version": 2, "request_id": "fixture-intent"}, cookie), 409)
+	expect(t, h.request("POST", path, map[string]any{"version": 0, "request_id": "fixture-intent"}, cookie), 400)
+	w = h.request("POST", path, map[string]any{"version": 1, "request_id": "fixture-intent"}, cookie)
 	expect(t, w, 201)
 	var result struct {
 		Run store.Run `json:"run"`
@@ -97,7 +97,8 @@ func TestExecutionTailIsBoundedAndPreservesCursorHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	run, _, _, err := h.store.CreateRun(context.Background(), actor, "tail-fixture", job.ID, job.Version)
+	runAdmission, err := h.store.AdmitRun(context.Background(), actor, store.RunAdmission{ID: "tail-fixture", RequestID: "tail-fixture", JobID: job.ID, Version: job.Version})
+	run := runAdmission.PublicRun()
 	if err != nil {
 		t.Fatal(err)
 	}

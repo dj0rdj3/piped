@@ -43,7 +43,8 @@ func TestCopyJobSecretsAndIndependentUpdates(t *testing.T) {
 	if copied.ID == source.ID || copied.Version != 1 || copied.Schedule.Enabled || !slices.Equal(copied.HostIDs, source.HostIDs) || copied.Script != source.Script || !slices.Equal(copied.SecretNames, []string{"NEW_TOKEN", "TOKEN"}) {
 		t.Fatalf("incorrect copy: %+v", copied)
 	}
-	_, _, connections, err := db.CreateRun(ctx, actor, "copy-snapshot", copied.ID, copied.Version)
+	connectionsAdmission, err := db.AdmitRun(ctx, actor, store.RunAdmission{ID: "copy-snapshot", RequestID: "copy-snapshot", JobID: copied.ID, Version: copied.Version})
+	connections := connectionsAdmission.(store.CreatedRun).Connections
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +87,8 @@ func TestCopyJobSecretsAndIndependentUpdates(t *testing.T) {
 	if _, err := service.Save(ctx, actor, copied.ID, input); err != nil {
 		t.Fatal(err)
 	}
-	_, _, original, err := db.CreateRun(ctx, actor, "source-snapshot", source.ID, source.Version)
+	originalAdmission, err := db.AdmitRun(ctx, actor, store.RunAdmission{ID: "source-snapshot", RequestID: "source-snapshot", JobID: source.ID, Version: source.Version})
+	original := originalAdmission.(store.CreatedRun).Connections
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,7 +183,7 @@ func TestLatestRunSummaryAndReadScope(t *testing.T) {
 		t.Fatal("new job has run")
 	}
 	for _, id := range []string{"first", "second"} {
-		if _, _, _, err := db.CreateRun(ctx, actor, id, job.ID, job.Version); err != nil {
+		if _, err := db.AdmitRun(ctx, actor, store.RunAdmission{ID: id, RequestID: id, JobID: job.ID, Version: job.Version}); err != nil {
 			t.Fatal(err)
 		}
 	}

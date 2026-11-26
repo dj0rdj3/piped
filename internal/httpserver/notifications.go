@@ -23,13 +23,7 @@ func notificationFailure(err error) error {
 }
 
 func (s *Server) listNotifications(w http.ResponseWriter, r *http.Request, actor store.Actor) error {
-	targets, err := s.config.Notifications.List(r.Context(), actor)
-	if err != nil {
-		return notificationFailure(err)
-	}
-	return listResponse(w, r, "targets", targets, func(item store.NotificationTarget) listEntry {
-		return listEntry{id: item.ID, name: item.Name, search: item.Name}
-	}, nil)
+	return listResponse(w, r, actor, "targets", s.auth.Store.NotificationsPage, nil)
 }
 
 func (s *Server) saveNotification(w http.ResponseWriter, r *http.Request, actor store.Actor) error {

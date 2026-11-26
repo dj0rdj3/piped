@@ -1,6 +1,7 @@
+import { useJobDraft } from './useJobDraft.js';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mountComponent, deferred, settle } from '../../../test-support/component.js';
+import { mountModel, mountComponent, deferred, settle } from '../../../test-support/component.js';
 
 const host = { id: 'host-one', name: 'Host', tags: [] };
 const job = {
@@ -12,6 +13,73 @@ const job = {
   secret_names: ['TOKEN'],
   schedule: { cron: '0 2 * * *', enabled: true },
 };
+
+test('job start retries retain one identity and successful starts clear it', async (t) => {
+  const writes = [];
+  let fail = true;
+  const target = { ...job };
+  const fixture = await mountComponent('features/jobs/JobsPage.vue', {
+    props: { currentUserId: 1 },
+    browser: { setInterval: () => 1, clearInterval() {} },
+    globals: { document: { visibilityState: 'visible' } },
+    request(path, options = {}) {
+      if (options.method === 'POST') {
+        writes.push(options.body);
+        if (fail) {
+          return Promise.reject(Object.assign(new Error('Acknowledgement lost'), { status: 0 }));
+        }
+        return Promise.resolve({
+          run: { id: 'same-admitted-run', status: 'running', started_at: 1, hosts: [] },
+        });
+      }
+      return Promise.resolve(path === '/hosts' ? { hosts: [host] } : { jobs: [target] });
+    },
+  });
+  t.after(fixture.unmount);
+  await settle();
+  await fixture.state.start(target);
+  assert.equal(writes.length, 1);
+  assert.match(writes[0].request_id, /^[a-f0-9-]{36}$/);
+  fail = false;
+  await fixture.state.start(target);
+  assert.equal(writes[1].request_id, writes[0].request_id);
+  assert.equal(fixture.state.execution.run.id, 'same-admitted-run');
+  await fixture.state.start(target);
+  assert.notEqual(writes[2].request_id, writes[0].request_id);
+});
+
+test('leaving Jobs aborts start requests and ignores late success or sign-out', async (t) => {
+  for (const outcome of ['success', 'unauthorized']) {
+    const pending = deferred();
+    let signal;
+    const target = { ...job };
+    const fixture = await mountComponent('features/jobs/JobsPage.vue', {
+      props: { currentUserId: 1 },
+      browser: { setInterval: () => 1, clearInterval() {} },
+      globals: { document: { visibilityState: 'visible' } },
+      request(path, options = {}) {
+        if (options.method === 'POST') {
+          signal = options.signal;
+          return pending.promise;
+        }
+        return Promise.resolve(path === '/hosts' ? { hosts: [host] } : { jobs: [target] });
+      },
+    });
+    t.after(fixture.unmount);
+    await settle();
+    const starting = fixture.state.start(target);
+    fixture.unmount();
+    assert.equal(signal.aborted, true);
+    if (outcome === 'success') {
+      pending.resolve({ run: { id: 'late', hosts: [] } });
+    } else {
+      pending.reject(Object.assign(new Error('Expired'), { status: 401 }));
+    }
+    await starting;
+    assert.equal(fixture.state.execution, null);
+    assert.deepEqual(fixture.events, []);
+  }
+});
 
 test('Jobs background refreshes cannot overwrite newer summaries or emit a stale sign-out', async (t) => {
   const summaries = [];
@@ -50,7 +118,7 @@ test('Jobs background refreshes cannot overwrite newer summaries or emit a stale
 
 test('job duplication preserves stored secrets and cron but starts with scheduling disabled', async (t) => {
   const writes = [];
-  const fixture = await mountComponent('features/jobs/JobDialog.vue', {
+  const fixture = await mountModel(useJobDraft, {
     props: { mode: 'duplicate', target: job },
     browser: { setTimeout: () => 1, clearTimeout() {} },
     request(path, options) {
@@ -85,7 +153,7 @@ test('bulk host selection searches names and tags and preserves saved execution 
     { id: 'web-three', name: 'Web three', address: 'three.local', tags: ['web'] },
   ];
   const writes = [];
-  const fixture = await mountComponent('features/jobs/JobDialog.vue', {
+  const fixture = await mountModel(useJobDraft, {
     props: {
       mode: 'edit',
       target: { ...job, host_ids: ['database', 'web-two'], schedule: { cron: '', enabled: false } },
@@ -157,7 +225,7 @@ test('unfiltered deselection clears targets while filtered deselection preserves
     { id: 'production-only', name: 'Production', tags: ['production', 'keep'] },
   ];
   const writes = [];
-  const fixture = await mountComponent('features/jobs/JobDialog.vue', {
+  const fixture = await mountModel(useJobDraft, {
     props: {
       mode: 'edit',
       target: {
@@ -230,7 +298,7 @@ test('unfiltered deselection clears targets while filtered deselection preserves
 test('unchecking a tag-included host removes only that host and saves the preserved selections', async (t) => {
   for (const individuallySelected of [false, true]) {
     const writes = [];
-    const fixture = await mountComponent('features/jobs/JobDialog.vue', {
+    const fixture = await mountModel(useJobDraft, {
       props: {
         mode: 'edit',
         target: {
@@ -285,7 +353,7 @@ test('unchecking a tag-included host removes only that host and saves the preser
 
 test('unchecking the final tag member deselects the tag and retains overlapping exclusions', async (t) => {
   const writes = [];
-  const fixture = await mountComponent('features/jobs/JobDialog.vue', {
+  const fixture = await mountModel(useJobDraft, {
     props: {
       mode: 'edit',
       target: {
@@ -339,7 +407,7 @@ test('unchecking the final tag member deselects the tag and retains overlapping 
 
 test('selecting a tag clears its host exclusions across filters without clearing unrelated exclusions', async (t) => {
   const writes = [];
-  const fixture = await mountComponent('features/jobs/JobDialog.vue', {
+  const fixture = await mountModel(useJobDraft, {
     props: {
       mode: 'edit',
       target: {
@@ -389,7 +457,7 @@ test('selecting a tag clears its host exclusions across filters without clearing
 });
 
 test('partial tags reflect exclusions across filters and clicking one restores all members', async (t) => {
-  const fixture = await mountComponent('features/jobs/JobDialog.vue', {
+  const fixture = await mountModel(useJobDraft, {
     props: {
       mode: 'edit',
       target: {
@@ -433,7 +501,7 @@ test('partial tags reflect exclusions across filters and clicking one restores a
 test('job forms preserve dynamic tags through editing and duplication without expanding individual hosts', async (t) => {
   for (const mode of ['create', 'edit', 'duplicate']) {
     const writes = [];
-    const fixture = await mountComponent('features/jobs/JobDialog.vue', {
+    const fixture = await mountModel(useJobDraft, {
       props: {
         mode,
         target:
@@ -509,7 +577,7 @@ test('jobs list resolves tag counts from current hosts without duplicates', asyn
 });
 
 test('host picker tracks tag inclusion independently of individual selection and filters', async (t) => {
-  const fixture = await mountComponent('features/jobs/JobDialog.vue', {
+  const fixture = await mountModel(useJobDraft, {
     props: { mode: 'edit', target: { ...job, host_tags: ['web'] } },
     request(path) {
       return Promise.resolve(
@@ -586,7 +654,7 @@ test('Jobs cancels pending summaries when rows change and on unmount', async (t)
 });
 
 test('host deselection preserves empty tags and case-sensitive overlapping membership', async (t) => {
-  const fixture = await mountComponent('features/jobs/JobDialog.vue', {
+  const fixture = await mountModel(useJobDraft, {
     props: {
       mode: 'edit',
       target: {

@@ -11,7 +11,7 @@ import (
 const ServerReclamationBudget = 3 * time.Second
 
 func (s *Store) SupportsServerReclamation() bool {
-	return s.db.dialect == "postgres" || s.db.dialect == "mariadb"
+	return s.db.adapter().reclamation != ""
 }
 
 // ReclaimServerOutput is called only while this engine has no active jobs.
@@ -43,11 +43,7 @@ func (s *Store) ReclaimServerOutput(ctx, interrupt context.Context) error {
 	// Join cancellation before discarding the session: its ID must never target
 	// a pooled connection that has already been handed to a running job.
 	defer stop()
-	settings := []string{`SET lock_timeout = '1ms'`, `SET statement_timeout = '1s'`}
-	if s.db.dialect == "mariadb" {
-		settings = []string{`SET SESSION lock_wait_timeout = 0, innodb_lock_wait_timeout = 1, max_statement_time = 1`}
-	}
-	for _, setting := range settings {
+	for _, setting := range s.db.adapter().maintenanceSettings {
 		if err := interrupt.Err(); err != nil {
 			return err
 		}
@@ -59,7 +55,7 @@ func (s *Store) ReclaimServerOutput(ctx, interrupt context.Context) error {
 	if err := conn.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM runs WHERE finished_at = 0)`).Scan(&active); err != nil || active {
 		return err
 	}
-	if s.db.dialect == "postgres" {
+	if s.db.adapter().reclamation == "postgres" {
 		for _, table := range []string{"run_output", "run_output_archives"} {
 			if err := interrupt.Err(); err != nil {
 				return err
@@ -98,17 +94,14 @@ func (s *Store) ReclaimServerOutput(ctx, interrupt context.Context) error {
 // Cancel the server statement and wait for its normal response, including any
 // DDL rollback, rather than closing its socket and admitting a job prematurely.
 func (s *Store) interruptServerReclamation(ctx, interrupt context.Context, conn *sql.Conn) (func(), error) {
-	query := `SELECT pg_backend_pid()`
-	if s.db.dialect == "mariadb" {
-		query = `SELECT CONNECTION_ID()`
-	}
+	query := s.db.adapter().owner.identity
 	var id int64
 	if err := conn.QueryRowContext(ctx, query).Scan(&id); err != nil {
 		return nil, err
 	}
-	query = `SELECT pg_cancel_backend(` + strconv.FormatInt(id, 10) + `)`
-	if s.db.dialect == "mariadb" {
-		query = `KILL QUERY ` + strconv.FormatInt(id, 10)
+	query = s.db.adapter().maintenanceCancel + strconv.FormatInt(id, 10)
+	if s.db.adapter().reclamation == "postgres" {
+		query += ")"
 	}
 	done, joined := make(chan struct{}), make(chan struct{})
 	go func() {

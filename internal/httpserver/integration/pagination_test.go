@@ -2,6 +2,7 @@ package integration
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -117,7 +118,8 @@ func TestResourceTablePagination(t *testing.T) {
 			if filtered.Page.Total != count || filtered.Page.Matched != 1 {
 				t.Fatalf("full-collection search: %s", result.Body.String())
 			}
-			for _, query := range []string{"limit=0", "limit=201", "limit=invalid", "limit=1&cursor=invalid", "cursor=invalid"} {
+			invalidIDCursor := base64.RawURLEncoding.EncodeToString([]byte(`{"key":"valid","id":"bad\u0000id"}`))
+			for _, query := range []string{"limit=0", "limit=201", "limit=invalid", "limit=1&cursor=invalid", "cursor=invalid", "limit=1&cursor=" + invalidIDCursor} {
 				expect(t, h.request("GET", "/api/"+resource.path+"?"+query, nil, cookie), 400)
 			}
 			expect(t, h.request("GET", "/api/"+resource.path+"?limit=8", nil, nil), 401)

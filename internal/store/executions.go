@@ -8,7 +8,9 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
+	"piped/internal/problem"
 	"piped/internal/secrets"
 )
 
@@ -61,30 +63,8 @@ type OutputChunk struct {
 	Data   []byte `json:"data"`
 }
 
-// CreateRun authorizes execution and snapshots the definition and connections in
-// one transaction. Later edits cannot change an already admitted execution.
-func (s *Store) CreateRun(ctx context.Context, actor Actor, id, jobID string, version int64) (Run, Job, []Connection, error) {
-	tx, err := s.beginAuthorized(ctx, actor, ScopeRunsWrite)
-	if err != nil {
-		return Run{}, Job{}, nil, err
-	}
-	defer tx.Rollback()
-	job, err := scanJob(tx.QueryRowContext(ctx, `SELECT `+jobColumns+` FROM jobs WHERE id = ?`, jobID))
-	if err != nil {
-		return Run{}, Job{}, nil, err
-	}
-	if job.Version != version {
-		return Run{}, Job{}, nil, ErrJobChanged
-	}
-	run, connections, err := snapshotRun(ctx, tx, id, job, "manual", 0)
-	if err != nil {
-		return Run{}, Job{}, nil, err
-	}
-	return run, job, connections, tx.Commit()
-}
-
 // All execution sources share the same transactional snapshots and writes.
-func snapshotRun(ctx context.Context, tx *transaction, id string, job Job, trigger string, scheduledAt int64) (Run, []Connection, error) {
+func snapshotRun(ctx context.Context, tx writeTransaction, id string, job Job, trigger string, scheduledAt int64) (Run, []Connection, error) {
 	ids, err := jobHostIDs(ctx, tx, job.ID)
 	if err != nil {
 		return Run{}, nil, err
@@ -151,10 +131,15 @@ func snapshotRun(ctx context.Context, tx *transaction, id string, job Job, trigg
 }
 
 func (s *Store) Runs(ctx context.Context, actor Actor, jobID string) ([]Run, error) {
-	if err := s.Authorize(ctx, actor, ScopeRunsRead); err != nil {
+	tx, err := s.beginAuthorized(ctx, actor, ScopeRunsRead)
+	if err != nil {
 		return nil, err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id, job_id, job_name, execution_mode, stop_on_failure, status, started_at, finished_at, run_as_sudo, run_source, scheduled_at FROM runs WHERE job_id = ? ORDER BY started_at DESC, run_sequence DESC LIMIT 100`, jobID)
+	defer tx.Rollback()
+	if !validLookupID(jobID) {
+		return nil, ErrNotFound
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT id, job_id, job_name, execution_mode, stop_on_failure, status, started_at, finished_at, run_as_sudo, run_source, scheduled_at FROM runs WHERE job_id = ? ORDER BY started_at DESC, run_sequence DESC LIMIT 100`, jobID)
 	if err != nil {
 		return nil, err
 	}
@@ -171,31 +156,69 @@ func (s *Store) Runs(ctx context.Context, actor Actor, jobID string) ([]Run, err
 }
 
 func (s *Store) Run(ctx context.Context, actor Actor, id string) (Run, error) {
-	if err := s.Authorize(ctx, actor, ScopeRunsRead); err != nil {
+	tx, err := s.beginAuthorized(ctx, actor, ScopeRunsRead)
+	if err != nil {
 		return Run{}, err
 	}
+	defer tx.Rollback()
+	return readRun(ctx, tx, id)
+}
+
+type runReader interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}
+
+// The caller has already checked fresh read or admission authority. Reuse the
+// current transaction for replay; never acquire another pooled connection here.
+func readRun(ctx context.Context, reader runReader, id string) (Run, error) {
+	if !validLookupID(id) {
+		return Run{}, ErrNotFound
+	}
 	var run Run
-	err := s.db.QueryRowContext(ctx, `SELECT id, job_id, job_name, execution_mode, stop_on_failure, status, started_at, finished_at, run_as_sudo, run_source, scheduled_at FROM runs WHERE id = ?`, id).Scan(&run.ID, &run.JobID, &run.JobName, &run.ExecutionMode, &run.StopOnFailure, &run.Status, &run.StartedAt, &run.FinishedAt, &run.RunAsSudo, &run.Trigger, &run.ScheduledAt)
+	err := reader.QueryRowContext(ctx, `SELECT id, job_id, job_name, execution_mode, stop_on_failure, status, started_at, finished_at, run_as_sudo, run_source, scheduled_at FROM runs WHERE id = ?`, id).Scan(&run.ID, &run.JobID, &run.JobName, &run.ExecutionMode, &run.StopOnFailure, &run.Status, &run.StartedAt, &run.FinishedAt, &run.RunAsSudo, &run.Trigger, &run.ScheduledAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Run{}, ErrNotFound
 	}
 	if err != nil {
 		return Run{}, err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT host_id, name, address, port, status, message, exit_code, started_at, finished_at FROM run_hosts WHERE run_id = ? ORDER BY position`, id)
+	rows, err := reader.QueryContext(ctx, `SELECT host_id, name, address, port, status, message, exit_code, started_at, finished_at FROM run_hosts WHERE run_id = ? ORDER BY position`, id)
 	if err != nil {
 		return Run{}, err
 	}
-	defer rows.Close()
-	run.Hosts = []RunHost{}
-	for rows.Next() {
-		var h RunHost
-		if err := rows.Scan(&h.HostID, &h.Name, &h.Address, &h.Port, &h.Status, &h.Message, &h.ExitCode, &h.StartedAt, &h.FinishedAt); err != nil {
-			return Run{}, err
-		}
-		run.Hosts = append(run.Hosts, h)
+	hosts, err := readRunHosts(rows)
+	if err != nil {
+		return Run{}, err
 	}
-	return run, rows.Err()
+	run.Hosts = hosts
+	return run, nil
+}
+
+type runHostRows interface {
+	Next() bool
+	Scan(...any) error
+	Err() error
+	Close() error
+}
+
+func readRunHosts(rows runHostRows) ([]RunHost, error) {
+	defer rows.Close()
+	hosts := []RunHost{}
+	for rows.Next() {
+		var host RunHost
+		if err := rows.Scan(&host.HostID, &host.Name, &host.Address, &host.Port, &host.Status, &host.Message, &host.ExitCode, &host.StartedAt, &host.FinishedAt); err != nil {
+			return nil, err
+		}
+		hosts = append(hosts, host)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	return hosts, nil
 }
 
 func (s *Store) SetRunHost(ctx context.Context, runID, hostID, status, message string, code *int) error {
@@ -283,10 +306,12 @@ func (s *Store) AppendOutput(ctx context.Context, runID, hostID string, data []b
 }
 
 func (s *Store) RunOutput(ctx context.Context, actor Actor, runID, hostID string, after int64) ([]OutputChunk, error) {
-	if err := s.authorizeRunOutput(ctx, actor, runID, hostID); err != nil {
+	tx, err := s.beginRunOutput(ctx, actor, runID, hostID)
+	if err != nil {
 		return nil, err
 	}
-	reader := outputReader{store: s, ctx: ctx, runID: runID, hostID: hostID, cursor: after}
+	defer tx.Rollback()
+	reader := outputReader{source: tx, ctx: ctx, runID: runID, hostID: hostID, cursor: after}
 	output := []OutputChunk{}
 	for len(output) < 16 {
 		chunk, err := reader.next()
@@ -301,29 +326,46 @@ func (s *Store) RunOutput(ctx context.Context, actor Actor, runID, hostID string
 	return output, nil
 }
 
-func (s *Store) authorizeRunOutput(ctx context.Context, actor Actor, runID, hostID string) error {
-	if err := s.Authorize(ctx, actor, ScopeRunsRead); err != nil {
-		return err
+func (s *Store) beginRunOutput(ctx context.Context, actor Actor, runID, hostID string) (*authorizedTransaction, error) {
+	tx, err := s.beginAuthorized(ctx, actor, ScopeRunsRead)
+	if err != nil {
+		return nil, err
+	}
+	if !validLookupID(runID) || !validLookupID(hostID) {
+		tx.Rollback()
+		return nil, ErrNotFound
 	}
 	var found int
-	err := s.db.QueryRowContext(ctx, `SELECT 1 FROM run_hosts WHERE run_id = ? AND host_id = ?`, runID, hostID).Scan(&found)
-	if errors.Is(err, sql.ErrNoRows) {
-		return ErrNotFound
+	err = tx.QueryRowContext(ctx, `SELECT 1 FROM run_hosts WHERE run_id = ? AND host_id = ?`, runID, hostID).Scan(&found)
+	if err != nil {
+		tx.Rollback()
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
 	}
-	return err
+	return tx, nil
+}
+
+// Application IDs cannot contain NUL or malformed UTF-8. Reject these before
+// binding SQL text, including on engines that would otherwise accept the bytes.
+func validLookupID(id string) bool {
+	return utf8.ValidString(id) && !strings.ContainsRune(id, 0)
 }
 
 // RunOutputTail seeks backwards through the cursor index, reading only the
 // latest visible bytes. Full output remains available through RunOutput cursors.
 func (s *Store) RunOutputTail(ctx context.Context, actor Actor, runID, hostID string) ([]OutputChunk, bool, error) {
-	if err := s.authorizeRunOutput(ctx, actor, runID, hostID); err != nil {
+	tx, err := s.beginRunOutput(ctx, actor, runID, hostID)
+	if err != nil {
 		return nil, false, err
 	}
-	reader := outputReader{store: s, ctx: ctx, runID: runID, hostID: hostID, descending: true}
+	defer tx.Rollback()
+	reader := outputReader{source: tx, ctx: ctx, runID: runID, hostID: hostID, descending: true}
 	return outputPage(&reader, 0, 0)
 }
 
-var ErrOutputCursor = errors.New("invalid history cursor")
+var ErrOutputCursor = problem.New(problem.Invalid, "invalid history cursor")
 
 // RunOutputBefore returns the page directly before a byte cursor. The offset
 // preserves prefixes of the boundary chunk when a page starts mid-chunk.
@@ -331,10 +373,12 @@ func (s *Store) RunOutputBefore(ctx context.Context, actor Actor, runID, hostID 
 	if before < 1 || offset < 0 || offset > 4096 {
 		return nil, false, ErrOutputCursor
 	}
-	if err := s.authorizeRunOutput(ctx, actor, runID, hostID); err != nil {
+	tx, err := s.beginRunOutput(ctx, actor, runID, hostID)
+	if err != nil {
 		return nil, false, err
 	}
-	reader := outputReader{store: s, ctx: ctx, runID: runID, hostID: hostID, cursor: before, descending: true, inclusive: offset > 0}
+	defer tx.Rollback()
+	reader := outputReader{source: tx, ctx: ctx, runID: runID, hostID: hostID, cursor: before, descending: true, inclusive: offset > 0}
 	return outputPage(&reader, before, offset)
 }
 
@@ -395,6 +439,9 @@ func (s *Store) ApproveHostKey(ctx context.Context, actor Actor, hostID, address
 		return err
 	}
 	defer tx.Rollback()
+	if err := authorize(ctx, tx, actor, ScopeRunsWrite); err != nil {
+		return err
+	}
 	// Delete/insert under the transaction lock is portable and atomic.
 	if _, err := tx.ExecContext(ctx, `DELETE FROM ssh_host_keys WHERE host_id = ? AND address = ? AND port = ?`, hostID, address, port); err != nil {
 		return err
@@ -460,4 +507,4 @@ func (s *Store) DeleteCompletedRun(ctx context.Context, actor Actor, id string) 
 	return tx.Commit()
 }
 
-var ErrRunActive = errors.New("active executions cannot be removed")
+var ErrRunActive = problem.New(problem.Conflict, "active executions cannot be removed")

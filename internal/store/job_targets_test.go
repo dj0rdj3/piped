@@ -50,11 +50,15 @@ func TestDynamicJobTargetsSnapshotFutureMembership(t *testing.T) {
 			t.Fatalf("targets = %v; want %v", ids, want)
 		}
 	}
-	first, _, connections, err := db.CreateRun(ctx, actor, "first", job.ID, job.Version)
+	firstAdmission, err := db.AdmitRun(ctx, actor, RunAdmission{ID: "first", RequestID: "first", JobID: job.ID, Version: job.Version})
+	first := firstAdmission.PublicRun()
+	connections := firstAdmission.(CreatedRun).Connections
 	check(first, connections, err, []string{"host", "alpha"})
 	saveHost("beta", "Beta", []string{"web"}, 0)
 	saveHost(alpha.ID, alpha.Name, []string{}, alpha.Version)
-	second, _, connections, err := db.CreateRun(ctx, actor, "second", job.ID, job.Version)
+	secondAdmission, err := db.AdmitRun(ctx, actor, RunAdmission{ID: "second", RequestID: "second", JobID: job.ID, Version: job.Version})
+	second := secondAdmission.PublicRun()
+	connections = secondAdmission.(CreatedRun).Connections
 	check(second, connections, err, []string{"host", "beta"})
 	old, err := db.Run(ctx, actor, first.ID)
 	if err != nil || len(old.Hosts) != 2 || old.Hosts[1].HostID != "alpha" {
@@ -67,7 +71,8 @@ func TestDynamicJobTargetsSnapshotFutureMembership(t *testing.T) {
 	}
 	saveHost("gamma", "Gamma", []string{"production"}, 0)
 	at := time.Now().Add(2 * time.Hour).Truncate(time.Minute)
-	scheduled, _, connections, err := db.CreateScheduledRun(ctx, "scheduled", job.ID, job.Version, at.Unix(), func() time.Time { return at })
+	scheduledAdmission, err := db.CreateScheduledRun(ctx, "scheduled", job.ID, job.Version, at.Unix(), func() time.Time { return at })
+	scheduled, connections := scheduledAdmission.Run, scheduledAdmission.Connections
 	check(scheduled, connections, err, []string{"host", "beta", "gamma"})
 }
 
@@ -78,7 +83,7 @@ func TestTagOnlyJobsAllowFutureHostsAndRejectEmptyOrOversizedRuns(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, _, err := db.CreateRun(ctx, actor, "empty", job.ID, job.Version); !errors.Is(err, ErrJobTargets) {
+	if _, err := db.AdmitRun(ctx, actor, RunAdmission{ID: "empty", RequestID: "empty", JobID: job.ID, Version: job.Version}); !errors.Is(err, ErrJobTargets) {
 		t.Fatalf("empty targets accepted: %v", err)
 	}
 	if _, err := db.Run(ctx, actor, "empty"); !errors.Is(err, ErrNotFound) {
@@ -95,11 +100,14 @@ func TestTagOnlyJobsAllowFutureHostsAndRejectEmptyOrOversizedRuns(t *testing.T) 
 		if _, err := tx.ExecContext(ctx, `INSERT INTO hosts (id, name, address, port, username, run_as_sudo, tags, encrypted_password, version, created_at) VALUES (?, ?, 'localhost', 22, 'fixture', 0, ?, ?, 1, 0)`, id, id, `["future"]`, []byte("encrypted password")); err != nil {
 			t.Fatal(err)
 		}
+		if err := saveHostTags(ctx, tx, id, []string{"future"}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, _, err := db.CreateRun(ctx, actor, "oversized", job.ID, job.Version); !errors.Is(err, ErrJobTargets) {
+	if _, err := db.AdmitRun(ctx, actor, RunAdmission{ID: "oversized", RequestID: "oversized", JobID: job.ID, Version: job.Version}); !errors.Is(err, ErrJobTargets) {
 		t.Fatalf("oversized targets accepted: %v", err)
 	}
 	job.ExcludedHostIDs = []string{"future-1000"}
@@ -107,7 +115,9 @@ func TestTagOnlyJobsAllowFutureHostsAndRejectEmptyOrOversizedRuns(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	run, _, connections, err := db.CreateRun(ctx, actor, "bounded", job.ID, job.Version)
+	runAdmission, err := db.AdmitRun(ctx, actor, RunAdmission{ID: "bounded", RequestID: "bounded", JobID: job.ID, Version: job.Version})
+	run := runAdmission.PublicRun()
+	connections := runAdmission.(CreatedRun).Connections
 	if err != nil || len(run.Hosts) != MaxJobHosts || len(connections) != MaxJobHosts {
 		t.Fatalf("limit failed: hosts=%d error=%v", len(run.Hosts), err)
 	}
@@ -150,13 +160,18 @@ func TestJobHostExclusionsPreserveTagsAndFutureMembership(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	first, _, connections, err := db.CreateRun(ctx, actor, "excluded-first", job.ID, job.Version)
+	firstAdmission, err := db.AdmitRun(ctx, actor, RunAdmission{ID: "excluded-first", RequestID: "excluded-first", JobID: job.ID, Version: job.Version})
+	first := firstAdmission.PublicRun()
+	connections := firstAdmission.(CreatedRun).Connections
 	check(first, connections, err, []string{"host", "alpha"})
 	addHost("beta")
-	second, _, connections, err := db.CreateRun(ctx, actor, "excluded-next", job.ID, job.Version)
+	secondAdmission, err := db.AdmitRun(ctx, actor, RunAdmission{ID: "excluded-next", RequestID: "excluded-next", JobID: job.ID, Version: job.Version})
+	second := secondAdmission.PublicRun()
+	connections = secondAdmission.(CreatedRun).Connections
 	check(second, connections, err, []string{"host", "alpha", "beta"})
 	at := time.Now().Add(2 * time.Hour).Truncate(time.Minute)
-	scheduled, _, connections, err := db.CreateScheduledRun(ctx, "excluded-scheduled", job.ID, job.Version, at.Unix(), func() time.Time { return at })
+	scheduledAdmission, err := db.CreateScheduledRun(ctx, "excluded-scheduled", job.ID, job.Version, at.Unix(), func() time.Time { return at })
+	scheduled, connections := scheduledAdmission.Run, scheduledAdmission.Connections
 	check(scheduled, connections, err, []string{"host", "alpha", "beta"})
 	listed, err := db.Jobs(ctx, actor)
 	if err != nil || !slices.Equal(listed[0].HostTags, job.HostTags) || !slices.Equal(listed[0].ExcludedHostIDs, []string{"excluded"}) {
@@ -171,7 +186,9 @@ func TestJobHostExclusionsPreserveTagsAndFutureMembership(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	restored, _, connections, err := db.CreateRun(ctx, actor, "excluded-restored", job.ID, job.Version)
+	restoredAdmission, err := db.AdmitRun(ctx, actor, RunAdmission{ID: "excluded-restored", RequestID: "excluded-restored", JobID: job.ID, Version: job.Version})
+	restored := restoredAdmission.PublicRun()
+	connections = restoredAdmission.(CreatedRun).Connections
 	check(restored, connections, err, []string{"host", "alpha", "beta", "excluded"})
 	old, err := db.Run(ctx, actor, first.ID)
 	if err != nil || len(old.Hosts) != 2 {

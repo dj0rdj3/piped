@@ -31,11 +31,12 @@ import (
 const testPassword = "correct horse battery staple"
 
 type harness struct {
-	handler  http.Handler
-	store    *store.Store
-	auth     *auth.Service
-	origin   string
-	requests int
+	handler    http.Handler
+	executions *execution.Engine
+	store      *store.Store
+	auth       *auth.Service
+	origin     string
+	requests   int
 }
 
 func newHarness(t *testing.T, secure bool, development ...bool) *harness {
@@ -106,7 +107,7 @@ func newHarnessWithDatabase(t *testing.T, secure bool, configuration store.Confi
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &harness{handler: h, store: s, auth: a, origin: origin}
+	return &harness{handler: h, store: s, auth: a, origin: origin, executions: engine}
 }
 
 func (h *harness) request(method, path string, body any, cookie *http.Cookie) *httptest.ResponseRecorder {
@@ -241,7 +242,7 @@ func TestCSRFAndSecurityHeaders(t *testing.T) {
 		{"X-Piped-Request": "1", "Origin": "null"},
 		{"X-Piped-Request": "1", "Origin": h.origin, "Sec-Fetch-Site": "cross-site"},
 	} {
-		r := httptest.NewRequest("POST", "/api/auth/logout", nil)
+		r := httptest.NewRequest("POST", h.origin+"/api/auth/logout", nil)
 		for k, v := range headers {
 			r.Header.Set(k, v)
 		}
@@ -280,7 +281,7 @@ func TestMalformedRequests(t *testing.T) {
 		{"application/json", `{"username":"admin","password":"secret","extra":true}`, 400},
 		{"application/json", `{"username":"` + strings.Repeat("a", 17000) + `"}`, 400},
 	} {
-		r := httptest.NewRequest("POST", "/api/auth/login", strings.NewReader(tc.body))
+		r := httptest.NewRequest("POST", h.origin+"/api/auth/login", strings.NewReader(tc.body))
 		r.Header.Set("Content-Type", tc.contentType)
 		r.Header.Set("X-Piped-Request", "1")
 		w := httptest.NewRecorder()
@@ -299,7 +300,7 @@ func TestMalformedRequests(t *testing.T) {
 func TestAuthenticationRateLimitIgnoresUntrustedForwardedHeaders(t *testing.T) {
 	h := newHarness(t, false)
 	for i := 0; i < 11; i++ {
-		r := httptest.NewRequest("POST", "/api/auth/login", strings.NewReader(fmt.Sprintf(`{"username":"missing%d","password":"wrong"}`, i)))
+		r := httptest.NewRequest("POST", h.origin+"/api/auth/login", strings.NewReader(fmt.Sprintf(`{"username":"missing%d","password":"wrong"}`, i)))
 		r.RemoteAddr = "192.0.2.1:1234"
 		r.Header.Set("Content-Type", "application/json")
 		r.Header.Set("X-Piped-Request", "1")

@@ -15,7 +15,7 @@ import (
 func archiveFixture(t *testing.T) (*Store, Actor) {
 	t.Helper()
 	db, actor, job := scheduledJobFixture(t)
-	if _, _, _, err := db.CreateRun(context.Background(), actor, "archive", job.ID, job.Version); err != nil {
+	if _, err := db.AdmitRun(context.Background(), actor, RunAdmission{ID: "archive", RequestID: "archive", JobID: job.ID, Version: job.Version}); err != nil {
 		t.Fatal(err)
 	}
 	return db, actor
@@ -159,7 +159,7 @@ func TestOutputArchiveLeavesOtherRunningHostsUncompressed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, _, err := db.CreateRun(ctx, actor, "archive", job.ID, job.Version); err != nil {
+	if _, err := db.AdmitRun(ctx, actor, RunAdmission{ID: "archive", RequestID: "archive", JobID: job.ID, Version: job.Version}); err != nil {
 		t.Fatal(err)
 	}
 	// Global output IDs interleave between hosts; archives must retain those gaps.
@@ -321,7 +321,7 @@ func TestOutputArchiveMaintenanceContinuesPastDamagedOutput(t *testing.T) {
 	db, actor, job := scheduledJobFixture(t)
 	ctx := context.Background()
 	for _, id := range []string{"broken", "later"} {
-		if _, _, _, err := db.CreateRun(ctx, actor, id, job.ID, job.Version); err != nil {
+		if _, err := db.AdmitRun(ctx, actor, RunAdmission{ID: id, RequestID: id, JobID: job.ID, Version: job.Version}); err != nil {
 			t.Fatal(err)
 		}
 		if err := db.AppendOutput(ctx, id, "host", []byte("preserved")); err != nil {

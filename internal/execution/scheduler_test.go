@@ -39,7 +39,7 @@ func TestPendingSchedulerBatchCleansUpOnErrorAndCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	output := &schedulerErrorWriter{make(chan struct{}), make(chan struct{})}
-	engine := &Engine{db: f.db, owner: owner, ctx: ctx, now: time.Now, logger: slog.New(slog.NewTextHandler(output, nil))}
+	engine := &Engine{db: f.db, runtimeOwner: &runtimeOwner{owner: owner, ctx: ctx, logger: slog.New(slog.NewTextHandler(output, nil))}, now: time.Now}
 	at := time.Now().Truncate(time.Minute)
 	// No schedules: normal completion must release the batch as well.
 	engine.runSchedules(at)
@@ -203,7 +203,7 @@ func TestScheduledOccurrenceSkipsManualAndConcurrentAdmissions(t *testing.T) {
 	release <- struct{}{}
 	finished(t, f, manual.ID)
 	// The database watermark independently prevents duplicates in this minute.
-	_, _, _, err := f.db.CreateScheduledRun(context.Background(), "duplicate", f.job.ID, f.job.Version, at.Unix(), f.engine.now)
+	_, err := f.db.CreateScheduledRun(context.Background(), "duplicate", f.job.ID, f.job.Version, at.Unix(), f.engine.now)
 	if err != store.ErrScheduleSkipped {
 		t.Fatalf("skipped occurrence retried after manual completion: %v", err)
 	}
@@ -247,7 +247,7 @@ func TestSchedulerDoesNotCatchUpAfterDelayOrRestart(t *testing.T) {
 func TestSchedulerRevalidatesCurrentMinuteAndSchedule(t *testing.T) {
 	f, clock, at := scheduledFixture(t, "* * * * *")
 	clock.Store(at.Add(time.Minute).Unix())
-	_, _, _, err := f.db.CreateScheduledRun(context.Background(), "late", f.job.ID, f.job.Version, at.Unix(), f.engine.now)
+	_, err := f.db.CreateScheduledRun(context.Background(), "late", f.job.ID, f.job.Version, at.Unix(), f.engine.now)
 	if err != store.ErrScheduleSkipped {
 		t.Fatal("late admission caught up a missed minute")
 	}
@@ -256,7 +256,7 @@ func TestSchedulerRevalidatesCurrentMinuteAndSchedule(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _, _, err = f.db.CreateScheduledRun(context.Background(), "disabled", f.job.ID, f.job.Version, at.Unix(), f.engine.now)
+	_, err = f.db.CreateScheduledRun(context.Background(), "disabled", f.job.ID, f.job.Version, at.Unix(), f.engine.now)
 	if err != store.ErrScheduleSkipped || len(schedulerRuns(t, f)) != 0 {
 		t.Fatal("stale enabled schedule admitted")
 	}
@@ -277,7 +277,7 @@ func TestScheduledAdmissionIsAtomicAndNeverStartsLate(t *testing.T) {
 		}
 		return at.Add(time.Minute)
 	}
-	_, _, _, err := f.db.CreateScheduledRun(context.Background(), "late-snapshot", f.job.ID, f.job.Version, at.Unix(), changingClock)
+	_, err := f.db.CreateScheduledRun(context.Background(), "late-snapshot", f.job.ID, f.job.Version, at.Unix(), changingClock)
 	if err != store.ErrScheduleSkipped || len(schedulerRuns(t, f)) != 0 {
 		t.Fatal("snapshot started after its scheduled minute")
 	}
@@ -285,7 +285,7 @@ func TestScheduledAdmissionIsAtomicAndNeverStartsLate(t *testing.T) {
 	results := make(chan error, 2)
 	for _, id := range []string{"concurrent-one", "concurrent-two"} {
 		group.Go(func() {
-			_, _, _, err := f.db.CreateScheduledRun(context.Background(), id, f.job.ID, f.job.Version, at.Unix(), f.engine.now)
+			_, err := f.db.CreateScheduledRun(context.Background(), id, f.job.ID, f.job.Version, at.Unix(), f.engine.now)
 			results <- err
 		})
 	}

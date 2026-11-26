@@ -3,17 +3,18 @@ package store
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"time"
+
+	"piped/internal/problem"
 )
 
 var (
-	ErrHostName        = errors.New("host name already exists")
-	ErrHostChanged     = errors.New("host changed; refresh and try again")
-	ErrHostCredential  = errors.New("SSH key credential not found")
-	ErrHostPassword    = errors.New("SSH password is required")
-	ErrCredentialInUse = errors.New("credential is assigned to a host")
+	ErrHostName        = problem.New(problem.Conflict, "host name already exists")
+	ErrHostChanged     = problem.New(problem.Conflict, "host changed; refresh and try again")
+	ErrHostCredential  = problem.New(problem.Invalid, "SSH key credential not found")
+	ErrHostPassword    = problem.New(problem.Invalid, "SSH password is required")
+	ErrCredentialInUse = problem.New(problem.Conflict, "credential is assigned to a host")
 )
 
 // Host is public metadata only. Passwords are never selected by list queries.
@@ -35,23 +36,20 @@ type Host struct {
 
 const hostColumns = `h.id, h.name, h.address, h.port, h.username,
     COALESCE(h.credential_id, ''), COALESCE(c.name, ''), h.encrypted_password IS NOT NULL,
-    h.run_as_sudo, h.encrypted_sudo_password IS NOT NULL, h.tags, h.version, h.created_at`
+    h.run_as_sudo, h.encrypted_sudo_password IS NOT NULL, h.version, h.created_at`
 
 func scanHost(row interface{ Scan(...any) error }) (Host, error) {
 	var host Host
-	var tags string
 	err := row.Scan(&host.ID, &host.Name, &host.Address, &host.Port, &host.Username,
 		&host.CredentialID, &host.CredentialName, &host.HasPassword,
-		&host.RunAsSudo, &host.HasSudoPassword, &tags, &host.Version, &host.CreatedAt)
+		&host.RunAsSudo, &host.HasSudoPassword, &host.Version, &host.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Host{}, ErrNotFound
 	}
 	if err != nil {
 		return Host{}, err
 	}
-	if err := json.Unmarshal([]byte(tags), &host.Tags); err != nil {
-		return Host{}, err
-	}
+
 	return host, nil
 }
 
@@ -61,9 +59,17 @@ func (s *Store) Hosts(ctx context.Context, actor Actor) ([]Host, error) {
 		return nil, err
 	}
 	defer tx.Rollback()
+	items, err := readHosts(ctx, tx, actor, nil)
+	if err != nil {
+		return nil, err
+	}
+	return items, tx.Commit()
+}
+
+func readHosts(ctx context.Context, tx *authorizedTransaction, actor Actor, ids []string) ([]Host, error) {
 	rows, err := tx.QueryContext(ctx, `SELECT `+hostColumns+`
         FROM hosts h LEFT JOIN credentials c ON c.id = h.credential_id
-        ORDER BY lower(h.name), h.name`)
+        `+listIDFilter("h.id", ids)+` ORDER BY lower(h.name), h.name`, listIDArgs(ids)...)
 	if err != nil {
 		return nil, err
 	}
@@ -82,7 +88,7 @@ func (s *Store) Hosts(ctx context.Context, actor Actor) ([]Host, error) {
 	if err := rows.Close(); err != nil {
 		return nil, err
 	}
-	return items, tx.Commit()
+	return items, readHostTags(ctx, tx, items)
 }
 
 // SaveHost checks authorization, references, version, and secret preservation in
@@ -93,6 +99,10 @@ func (s *Store) SaveHost(ctx context.Context, actor Actor, host Host, password, 
 		return Host{}, err
 	}
 	defer tx.Rollback()
+	affected, err := affectedListJobs(ctx, tx, host.ID, host.Tags)
+	if err != nil {
+		return Host{}, err
+	}
 	if !create {
 		var previousVersion int64
 		var previousPassword, previousSudo []byte
@@ -124,10 +134,7 @@ func (s *Store) SaveHost(ctx context.Context, actor Actor, host Host, password, 
 	if !host.RunAsSudo || len(sudoPassword) == 0 {
 		sudoPassword = nil
 	}
-	tags, err := json.Marshal(host.Tags)
-	if err != nil {
-		return Host{}, err
-	}
+
 	if create {
 		host.CreatedAt = time.Now().Unix()
 		host.Version = 1
@@ -136,13 +143,13 @@ func (s *Store) SaveHost(ctx context.Context, actor Actor, host Host, password, 
             run_as_sudo, encrypted_sudo_password, tags, version, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			host.ID, host.Name, host.Address, host.Port, host.Username, credentialID, password,
-			host.RunAsSudo, sudoPassword, string(tags), host.Version, host.CreatedAt)
+			host.RunAsSudo, sudoPassword, "[]", host.Version, host.CreatedAt)
 	} else {
 		_, err = tx.ExecContext(ctx, `UPDATE hosts SET name = ?, address = ?, port = ?,
             username = ?, credential_id = ?, encrypted_password = ?, run_as_sudo = ?,
-            encrypted_sudo_password = ?, tags = ?, version = version + 1 WHERE id = ?`,
+            encrypted_sudo_password = ?, version = version + 1 WHERE id = ?`,
 			host.Name, host.Address, host.Port, host.Username, credentialID, password,
-			host.RunAsSudo, sudoPassword, string(tags), host.ID)
+			host.RunAsSudo, sudoPassword, host.ID)
 	}
 	if err != nil {
 		if foreignKeyViolation(err) {
@@ -153,9 +160,23 @@ func (s *Store) SaveHost(ctx context.Context, actor Actor, host Host, password, 
 		}
 		return Host{}, err
 	}
+	if err := saveHostTags(ctx, tx, host.ID, host.Tags); err != nil {
+		return Host{}, err
+	}
 	saved, err := scanHost(tx.QueryRowContext(ctx, `SELECT `+hostColumns+`
         FROM hosts h LEFT JOIN credentials c ON c.id = h.credential_id WHERE h.id = ?`, host.ID))
 	if err != nil {
+		return Host{}, err
+	}
+	savedHosts := []Host{saved}
+	if err := readHostTags(ctx, tx, savedHosts); err != nil {
+		return Host{}, err
+	}
+	saved = savedHosts[0]
+	if err := refreshListEntry(ctx, tx, "hosts", host.ID); err != nil {
+		return Host{}, err
+	}
+	if err := refreshListJobs(ctx, tx, affected); err != nil {
 		return Host{}, err
 	}
 	return saved, tx.Commit()
@@ -167,6 +188,10 @@ func (s *Store) DeleteHost(ctx context.Context, actor Actor, id string, version 
 		return err
 	}
 	defer tx.Rollback()
+	affected, err := affectedListJobs(ctx, tx, id, nil)
+	if err != nil {
+		return err
+	}
 	var current int64
 	err = tx.QueryRowContext(ctx, "SELECT version FROM hosts WHERE id = ?", id).Scan(&current)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -182,6 +207,12 @@ func (s *Store) DeleteHost(ctx context.Context, actor Actor, id string, version 
 		if foreignKeyViolation(err) {
 			return ErrHostInUse
 		}
+		return err
+	}
+	if err := refreshListEntry(ctx, tx, "hosts", id); err != nil {
+		return err
+	}
+	if err := refreshListJobs(ctx, tx, affected); err != nil {
 		return err
 	}
 	return tx.Commit()

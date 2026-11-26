@@ -30,6 +30,15 @@ let summaryController;
 let restoreController;
 let restored = false;
 let summaryTimer;
+let startController;
+const startRequests = new Map();
+watch(
+  () => props.currentUserId,
+  () => {
+    startController?.abort();
+    startRequests.clear();
+  },
+);
 watch(
   () => props.requestedAction,
   (action) => {
@@ -113,6 +122,8 @@ onUnmounted(() => {
   summaryController?.abort();
   restoreController?.abort();
   window.clearInterval(summaryTimer);
+  startController?.abort();
+  startRequests.clear();
 });
 
 async function refreshSummaries() {
@@ -166,11 +177,21 @@ async function start(job) {
   }
   starting.value = true;
   actionError.value = '';
+  const key = `${job.id}:${job.version}`;
+  const controller = new AbortController();
+  startController = controller;
   try {
+    const requestID = startRequests.get(key) || globalThis.crypto.randomUUID();
+    startRequests.set(key, requestID);
     const result = await api(`/jobs/${job.id}/run`, {
       method: 'POST',
-      body: { version: job.version },
+      body: { version: job.version, request_id: requestID },
+      signal: controller.signal,
     });
+    if (controller.signal.aborted) {
+      return;
+    }
+    startRequests.delete(key);
     execution.value = { job, run: result.run };
     job.latest_run = {
       id: result.run.id,
@@ -179,6 +200,12 @@ async function start(job) {
     };
     rememberExecution({ runID: result.run.id, hostID: result.run.hosts[0]?.host_id });
   } catch (err) {
+    if (controller.signal.aborted) {
+      return;
+    }
+    if (err.status >= 400 && err.status < 500) {
+      startRequests.delete(key);
+    }
     actionError.value = err.message;
     if (err.status === 401) {
       emit('signed-out');

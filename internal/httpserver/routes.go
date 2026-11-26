@@ -49,6 +49,7 @@ func (s *Server) resourceRoutes() []response.Route {
 	}
 	if s.config.Executions != nil {
 		routes = append(routes,
+			response.Route{Method: "GET", Path: "/runtime", Scope: store.ScopeRunsRead, Handler: s.runtimeStatus},
 			response.Route{Method: "POST", Path: "/jobs/{id}/run", Scope: store.ScopeRunsWrite, Handler: s.startRun},
 			response.Route{Method: "GET", Path: "/jobs/{id}/runs", Scope: store.ScopeRunsRead, Handler: s.listRuns},
 			response.Route{Method: "GET", Path: "/runs/{run}", Scope: store.ScopeRunsRead, Handler: s.getRun},

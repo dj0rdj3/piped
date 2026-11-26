@@ -9,6 +9,7 @@ import (
 
 	"piped/internal/auth"
 	"piped/internal/httpserver/response"
+	"piped/internal/lifecycle"
 	"piped/internal/store"
 )
 
@@ -84,13 +85,13 @@ func Cleanup(ctx context.Context, s *store.Store, logger *slog.Logger) {
 	ticker := time.NewTicker(time.Hour)
 	defer ticker.Stop()
 	for {
-		cleanup, cancel := context.WithTimeout(ctx, 5*time.Second)
+		cleanup, cancel := context.WithTimeout(ctx, lifecycle.StorageTimeout)
 		err := s.PurgeSessions(cleanup, time.Now().Unix())
 		cancel()
 		if err != nil && ctx.Err() == nil {
 			logger.Error("session cleanup failed", "error", err)
 		}
-		cleanup, cancel = context.WithTimeout(ctx, 5*time.Second)
+		cleanup, cancel = context.WithTimeout(ctx, lifecycle.StorageTimeout)
 		err = s.PurgeAPIKeys(cleanup, time.Now())
 		cancel()
 		if err != nil && ctx.Err() == nil {

@@ -272,7 +272,7 @@ func pendingKey(t *testing.T, f *engineFixture, runID string) HostKey {
 func acceptKey(t *testing.T, f *engineFixture, runID string) HostKey {
 	t.Helper()
 	key := pendingKey(t, f, runID)
-	if err := f.engine.Approve(context.Background(), f.actor, runID, key.HostID, key.Fingerprint, true); err != nil {
+	if err := f.engine.Approve(context.Background(), f.actor, ApprovalRequest{RunID: runID, HostID: key.HostID, Fingerprint: key.Fingerprint, Accept: true}); err != nil {
 		t.Fatal(err)
 	}
 	return key
@@ -302,14 +302,14 @@ func TestSSHApprovalInteractiveInputAndTrustedReconnect(t *testing.T) {
 	if key.Fingerprint != ssh.FingerprintSHA256(server.signer.PublicKey()) || key.PreviousFingerprint != "" {
 		t.Fatalf("wrong prompt: %+v", key)
 	}
-	if err := f.engine.Approve(context.Background(), f.actor, run.ID, key.HostID, "stale", true); !errors.Is(err, ErrApproval) {
+	if err := f.engine.Approve(context.Background(), f.actor, ApprovalRequest{RunID: run.ID, HostID: key.HostID, Fingerprint: "stale", Accept: true}); !errors.Is(err, ErrApproval) {
 		t.Fatal(err)
 	}
-	if err := f.engine.Approve(context.Background(), f.actor, run.ID, key.HostID, key.Fingerprint, true); err != nil {
+	if err := f.engine.Approve(context.Background(), f.actor, ApprovalRequest{RunID: run.ID, HostID: key.HostID, Fingerprint: key.Fingerprint, Accept: true}); err != nil {
 		t.Fatal(err)
 	}
 	await(t, func() bool { return strings.Contains(outputText(t, f, run.ID), "Name? ") })
-	if err := f.engine.Input(context.Background(), f.actor, run.ID, f.hosts[0].ID, "Ada\n"); err != nil {
+	if err := f.engine.Input(context.Background(), f.actor, InputRequest{RunID: run.ID, HostID: f.hosts[0].ID, Data: "Ada\n"}); err != nil {
 		r, _ := f.db.Run(context.Background(), f.actor, run.ID)
 		t.Fatalf("input: %v state=%+v output=%q", err, r, outputText(t, f, run.ID))
 	}
@@ -326,7 +326,7 @@ func TestSSHApprovalInteractiveInputAndTrustedReconnect(t *testing.T) {
 	if err != nil || len(keys) != 0 {
 		t.Fatal("trusted key prompted again")
 	}
-	if err := f.engine.Input(context.Background(), f.actor, run.ID, f.hosts[0].ID, "Again\n"); err != nil {
+	if err := f.engine.Input(context.Background(), f.actor, InputRequest{RunID: run.ID, HostID: f.hosts[0].ID, Data: "Again\n"}); err != nil {
 		t.Fatal(err)
 	}
 	if result := finished(t, f, run.ID); result.Status != "succeeded" {
@@ -349,7 +349,7 @@ func TestSSHChangedKeyDenialAndCancelApproval(t *testing.T) {
 	if key.PreviousFingerprint != ssh.FingerprintSHA256(other.signer.PublicKey()) {
 		t.Fatal("changed key not reported")
 	}
-	if err := f.engine.Approve(context.Background(), f.actor, run.ID, key.HostID, key.Fingerprint, false); err != nil {
+	if err := f.engine.Approve(context.Background(), f.actor, ApprovalRequest{RunID: run.ID, HostID: key.HostID, Fingerprint: key.Fingerprint, Accept: false}); err != nil {
 		t.Fatal(err)
 	}
 	if result := finished(t, f, run.ID); result.Status != "failed" {
@@ -360,7 +360,7 @@ func TestSSHChangedKeyDenialAndCancelApproval(t *testing.T) {
 	}
 	run = startFixture(t, f)
 	pendingKey(t, f, run.ID)
-	if err := f.engine.Cancel(context.Background(), f.actor, run.ID, target.ID); err != nil {
+	if err := f.engine.Cancel(context.Background(), f.actor, HostRequest{RunID: run.ID, HostID: target.ID}); err != nil {
 		t.Fatal(err)
 	}
 	if result := finished(t, f, run.ID); result.Status != "cancelled" {
@@ -393,9 +393,9 @@ func TestSSHCancellationKillsChildrenAndTerminalControl(t *testing.T) {
 			// Cleanup in case of a regression, without leaving a fixture process.
 			defer syscall.Kill(pid, syscall.SIGKILL)
 			if control {
-				err = f.engine.Input(context.Background(), f.actor, run.ID, f.hosts[0].ID, "\x03")
+				err = f.engine.Input(context.Background(), f.actor, InputRequest{RunID: run.ID, HostID: f.hosts[0].ID, Data: "\x03"})
 			} else {
-				err = f.engine.Cancel(context.Background(), f.actor, run.ID, f.hosts[0].ID)
+				err = f.engine.Cancel(context.Background(), f.actor, HostRequest{RunID: run.ID, HostID: f.hosts[0].ID})
 			}
 			if err != nil {
 				t.Fatal(err)
@@ -427,7 +427,7 @@ func TestSSHCtrlCStopsContinuousOutput(t *testing.T) {
 	run := startFixture(t, f)
 	acceptKey(t, f, run.ID)
 	await(t, func() bool { return strings.Contains(outputText(t, f, run.ID), "y") })
-	if err := f.engine.Input(context.Background(), f.actor, run.ID, f.hosts[0].ID, "\x03"); err != nil {
+	if err := f.engine.Input(context.Background(), f.actor, InputRequest{RunID: run.ID, HostID: f.hosts[0].ID, Data: "\x03"}); err != nil {
 		t.Fatal(err)
 	}
 	result := finished(t, f, run.ID)
@@ -586,7 +586,7 @@ printf 'Answer:%s\n' "$answer"`
 			if strings.Contains(outputText(t, f, run.ID), "Answer:") {
 				t.Fatal("sudo secret entered script stdin")
 			}
-			if err := f.engine.Input(context.Background(), f.actor, run.ID, f.hosts[0].ID, "human-input\n"); err != nil {
+			if err := f.engine.Input(context.Background(), f.actor, InputRequest{RunID: run.ID, HostID: f.hosts[0].ID, Data: "human-input\n"}); err != nil {
 				t.Fatal(err)
 			}
 			result := finished(t, f, run.ID)
@@ -614,7 +614,7 @@ printf 'Answer:%s\n' "$answer"`
 			}
 			cancelledRun := startFixture(t, f)
 			await(t, func() bool { return strings.Contains(outputText(t, f, cancelledRun.ID), "SUDO_READY") })
-			if err := f.engine.Cancel(context.Background(), f.actor, cancelledRun.ID, f.hosts[0].ID); err != nil {
+			if err := f.engine.Cancel(context.Background(), f.actor, HostRequest{RunID: cancelledRun.ID, HostID: f.hosts[0].ID}); err != nil {
 				t.Fatal(err)
 			}
 			if result := finished(t, f, cancelledRun.ID); result.Status != "cancelled" {
@@ -723,7 +723,7 @@ printf 'ANSWER:%s\n' "$answer"`, false, nil, "")
 	if state.FinishedAt > 0 {
 		t.Fatalf("execution ended before prompt: %+v, output=%q", state, outputText(t, f, run.ID))
 	}
-	if err := f.engine.Input(context.Background(), f.actor, run.ID, f.hosts[0].ID, "human-input\n"); err != nil {
+	if err := f.engine.Input(context.Background(), f.actor, InputRequest{RunID: run.ID, HostID: f.hosts[0].ID, Data: "human-input\n"}); err != nil {
 		t.Fatal(err)
 	}
 	result := finished(t, f, run.ID)
@@ -788,7 +788,7 @@ func TestScheduledSSHWaitsForApprovalAndSkipsOverlap(t *testing.T) {
 	if len(schedulerRuns(t, f)) != 1 {
 		t.Fatal("overlapped approval wait")
 	}
-	if err := f.engine.Approve(context.Background(), f.actor, run.ID, key.HostID, key.Fingerprint, true); err != nil {
+	if err := f.engine.Approve(context.Background(), f.actor, ApprovalRequest{RunID: run.ID, HostID: key.HostID, Fingerprint: key.Fingerprint, Accept: true}); err != nil {
 		t.Fatal(err)
 	}
 	if result := finished(t, f, run.ID); result.Status != "succeeded" {

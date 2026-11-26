@@ -52,8 +52,8 @@ func TestNotificationRoutesReadableTemplatesAndWriteOnlySecrets(t *testing.T) {
 		input.Body = body
 		expect(t, h.request("PUT", "/api/notifications/"+result.Target.ID, input, cookie), 400)
 	}
-	expect(t, h.request("DELETE", "/api/notifications/"+result.Target.ID, map[string]int64{"version": 1}, cookie), 409)
-	expect(t, h.request("DELETE", "/api/notifications/"+result.Target.ID, map[string]int64{"version": 2}, cookie), 204)
+	expect(t, h.request("DELETE", "/api/notifications/"+result.Target.ID, map[string]any{"version": 1}, cookie), 409)
+	expect(t, h.request("DELETE", "/api/notifications/"+result.Target.ID, map[string]any{"version": 2}, cookie), 204)
 	expect(t, h.request("GET", "/notifications", nil, cookie), 200)
 }
 

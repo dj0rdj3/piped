@@ -11,18 +11,20 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+
+	"piped/internal/problem"
 )
 
 //go:embed migrations/sqlite/*.sql migrations/postgres/*.sql migrations/mysql/*.sql
 var migrations embed.FS
 
 var (
-	ErrNotFound     = errors.New("record not found")
-	ErrConflict     = errors.New("username already exists")
+	ErrNotFound     = problem.New(problem.Missing, "record not found")
+	ErrConflict     = problem.New(problem.Conflict, "username already exists")
 	ErrInitialized  = errors.New("administrator already initialized")
-	ErrUnauthorized = errors.New("session or credentials changed")
-	ErrForbidden    = errors.New("API key does not permit this operation")
-	ErrLastUser     = errors.New("cannot delete the last user")
+	ErrUnauthorized = problem.New(problem.Unauthorized, "session or credentials changed")
+	ErrForbidden    = problem.New(problem.Forbidden, "API key does not permit this operation")
+	ErrLastUser     = problem.New(problem.Conflict, "cannot delete the last user")
 )
 
 type Store struct {
@@ -90,6 +92,14 @@ func Open(ctx context.Context, filename string) (*Store, error) {
 	if err := s.migrate(ctx); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrate database: %w", err)
+	}
+	if err := s.initializeHostTags(ctx); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("initialize host membership: %w", err)
+	}
+	if err := s.initializeLists(ctx); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("initialize list metadata: %w", err)
 	}
 	return s, nil
 }

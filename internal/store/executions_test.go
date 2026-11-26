@@ -21,7 +21,7 @@ func TestOutputBatchIsAtomicBoundedAndNotifiedAfterCommit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, _, err := db.CreateRun(ctx, actor, "run", job.ID, job.Version); err != nil {
+	if _, err := db.AdmitRun(ctx, actor, RunAdmission{ID: "run", RequestID: "run", JobID: job.ID, Version: job.Version}); err != nil {
 		t.Fatal(err)
 	}
 	changes, stop := db.WatchRun("run")
