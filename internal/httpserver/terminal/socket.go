@@ -91,6 +91,8 @@ func (s *Handler) Serve(w http.ResponseWriter, r *http.Request, actor store.Acto
 // Read status before output: a completed snapshot guarantees all final chunks
 // were committed before the subsequent cursor reads. Wakeups cover later changes.
 func (s *Handler) pushTerminal(ctx context.Context, conn *websocket.Conn, actor store.Actor, runID, hostID string, after *int64, channel *terminalChannel) (bool, bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
 	run, err := s.store.Run(ctx, actor, runID)
 	if err != nil {
 		return false, false, err
@@ -230,6 +232,8 @@ func (s *Handler) readTerminalMessages(ctx context.Context, conn *websocket.Conn
 }
 
 func (s *Handler) sendTerminalHistory(ctx context.Context, conn *websocket.Conn, actor store.Actor, runID, hostID string, id, before int64, offset int) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
 	result := map[string]any{"type": "history", "id": id}
 	if !s.allow("terminal-history:"+actor.SessionHash, time.Now()) {
 		result["error"] = "Too many history requests. Try again shortly."

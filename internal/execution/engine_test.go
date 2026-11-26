@@ -24,21 +24,27 @@ import (
 )
 
 type engineFixture struct {
-	databasePath string
-	engine       *Engine
-	db           *store.Store
-	vault        *secrets.Vault
-	actor        store.Actor
-	hosts        []store.Host
-	job          store.Job
+	configuration store.Config
+	databasePath  string
+	engine        *Engine
+	db            *store.Store
+	vault         *secrets.Vault
+	actor         store.Actor
+	hosts         []store.Host
+	job           store.Job
 }
 
 func newFixture(t *testing.T, mode string, stop bool) *engineFixture {
 	t.Helper()
-	ctx := context.Background()
 	driver, dsn := testdatabase.Settings(t)
 	databasePath := filepath.Join(t.TempDir(), "data", "test.db")
-	db, err := store.OpenDatabase(ctx, store.Config{Driver: driver, DSN: dsn, Path: databasePath})
+	return newFixtureWithDatabase(t, mode, stop, store.Config{Driver: driver, DSN: dsn, Path: databasePath})
+}
+
+func newFixtureWithDatabase(t *testing.T, mode string, stop bool, configuration store.Config) *engineFixture {
+	t.Helper()
+	ctx := context.Background()
+	db, err := store.OpenDatabase(ctx, configuration)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +83,16 @@ func newFixture(t *testing.T, mode string, stop bool) *engineFixture {
 		t.Fatal(err)
 	}
 	t.Cleanup(engine.Close)
-	return &engineFixture{databasePath, engine, db, vault, actor, targets, job}
+	return &engineFixture{
+		configuration: configuration,
+		databasePath:  configuration.Path,
+		engine:        engine,
+		db:            db,
+		vault:         vault,
+		actor:         actor,
+		hosts:         targets,
+		job:           job,
+	}
 }
 
 func await(t *testing.T, condition func() bool) {

@@ -54,11 +54,14 @@ func (s *Handler) streamTerminal(ctx context.Context, conn *websocket.Conn, acto
 		case <-changes:
 		case <-inputDone:
 		case <-ticker.C:
-			if err := s.store.Authorize(ctx, actor, store.ScopeRunsRead); err != nil {
+			check, cancel := context.WithTimeout(ctx, 5*time.Second)
+			err := s.store.Authorize(check, actor, store.ScopeRunsRead)
+			cancel()
+			if err != nil {
 				return err
 			}
 			pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-			err := conn.Ping(pingCtx)
+			err = conn.Ping(pingCtx)
 			cancel()
 			if err != nil {
 				return err

@@ -1,9 +1,11 @@
 package httpserver
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"piped/internal/httpserver/development"
 	"piped/internal/httpserver/response"
@@ -29,6 +31,13 @@ func (s *Server) protect(next http.Handler) http.Handler {
 			w.Header().Set("Strict-Transport-Security", "max-age=31536000")
 		}
 		w.Header().Set("Cache-Control", "no-store")
+		if strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/mcp" {
+			// Socket handshakes share this budget. Upgraded terminals manage
+			// their own lifetime and bound each storage/control operation.
+			ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+			defer cancel()
+			r = r.WithContext(ctx)
+		}
 		if strings.HasPrefix(r.URL.Path, "/api/") && r.Method != http.MethodGet && r.Method != http.MethodHead {
 			// The custom header is not CORS-safelisted. No CORS permission is granted.
 			// Check Origin too, including requests from a different same-site origin.

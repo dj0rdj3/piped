@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"time"
 
 	"piped/internal/auth"
 )
@@ -52,7 +53,9 @@ func register(ctx context.Context, service *auth.Service, prompts prompter, outp
 			}
 			continue
 		}
-		user, err := service.InitAdmin(ctx, username, password)
+		setup, cancel := context.WithTimeout(ctx, 5*time.Second)
+		user, err := service.InitAdmin(setup, username, password)
+		cancel()
 		if err != nil {
 			return err
 		}

@@ -1,6 +1,6 @@
 # SSH command service — requirements and decisions
 
-Last updated: 2026-11-25 (Europe/Belgrade)
+Last updated: 2026-11-26 (Europe/Belgrade)
 
 ## Status and working agreement
 
@@ -1564,3 +1564,36 @@ reads and host-picker work while preserving ordering, dynamic tags, exclusions,
 authorization, secret non-disclosure, and all existing features. Keep production
 user API and internal development API/MCP/WebMCP isolated. Preserve ongoing
 uncommitted work, deployment data, configuration, dependencies, and caches.
+
+R167 (2026-11-25): Fix all four production-readiness findings: bound and cancel
+execution database operations, acquire exclusive server ownership before run
+recovery, retry failed completion persistence without replaying scripts, and
+report output-storage failures as failures rather than user cancellations.
+Retain ownership until joined cleanup, stop admission if its server connection
+is lost, and bound shutdown finalization. Preserve committed host outcomes when
+recovering a missing parent completion. Add failure/concurrency regressions and
+verify both profiles and supported databases. Preserve deployment data, secrets,
+configuration, existing safeguards, and CGO-free builds; no new dependencies.
+
+R168 (2026-11-26): Fix the four follow-up readiness findings and add regressions
+for the exact failures. Reconcile ambiguous admission commits as failed without
+executing or replaying their scripts, including scheduled admissions. Fence
+execution transactions against both the current ownership generation and its
+live SQL session; bound predecessor cleanup before replacement recovery. Retry
+each completed host independently while other scripts continue. Preserve masked
+output tails during cancellation and bounded engine shutdown. Use additive
+ownership migrations, preserve existing data/configuration/dependencies, and
+verify real SQL session termination and lost successful COMMIT replies against
+disposable server databases, alongside race and production-isolation checks.
+
+R169 (2026-11-26): Repeat the complete production-readiness review, emphasizing
+security and stability; fix confirmed findings and recheck until no actionable
+findings remain within the reviewed scope. Preserve deployment data, secrets,
+existing safeguards and uncommitted work. Bound API authentication and storage
+requests, startup/CLI storage operations, and periodic cleanup/compression and
+notification-output reads. Keep upgraded terminal sessions long-lived with bounded
+individual operations. Report storage deadlines as retryable failures without
+invalidating valid sessions or bearer keys. Add regressions including targeted
+PostgreSQL network stalls while ownership remains healthy; verify both profiles,
+race behavior, supported databases and production tooling isolation. No new
+dependencies or configuration settings.

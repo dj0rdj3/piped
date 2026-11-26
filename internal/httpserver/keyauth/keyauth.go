@@ -48,8 +48,8 @@ func New(config Config, next func(http.ResponseWriter, *http.Request, store.Acto
 		}
 		actor, err := config.Resolve(r.Context(), token)
 		if err != nil {
-			w.Header().Set("WWW-Authenticate", `Bearer realm="piped", error="invalid_token"`)
 			if errors.Is(err, store.ErrUnauthorized) {
+				w.Header().Set("WWW-Authenticate", `Bearer realm="piped", error="invalid_token"`)
 				response.JSON(w, 401, map[string]string{"error": "API key invalid, expired, or revoked"})
 			} else {
 				response.WriteError(w, err, config.Logger)

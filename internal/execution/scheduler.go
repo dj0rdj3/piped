@@ -55,7 +55,9 @@ func (e *Engine) runSchedules(at time.Time) {
 		e.schedulePending--
 		e.mu.Unlock()
 	}()
-	jobs, err := e.db.ScheduledJobs(e.ctx)
+	lookup, cancel := e.operationContext(e.ctx)
+	jobs, err := e.db.ScheduledJobs(lookup)
+	cancel()
 	if err != nil {
 		if e.ctx.Err() == nil {
 			e.logger.Error("schedule lookup failed", "error", err)
@@ -78,9 +80,16 @@ func (e *Engine) runSchedules(at time.Time) {
 		}
 		random := make([]byte, 16)
 		_, _ = rand.Read(random)
-		run, job, connections, err := e.db.CreateScheduledRun(e.ctx, hex.EncodeToString(random), candidate.ID, candidate.Version, minute, e.now)
+		admission, cancel := e.operationContext(e.ctx)
+		run, job, connections, err := e.db.CreateScheduledRun(admission, hex.EncodeToString(random), candidate.ID, candidate.Version, minute, e.now)
+		cancel()
 		if err == nil {
 			e.launch(run, job, connections)
+		} else {
+			e.observeOwnership(err)
+			if run.ID != "" && !e.ownershipLost.Load() {
+				e.reconcileAdmission(run.ID)
+			}
 		}
 		e.mu.Unlock()
 		if err != nil && !errors.Is(err, store.ErrScheduleSkipped) && e.ctx.Err() == nil {

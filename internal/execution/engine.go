@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -24,6 +25,7 @@ var (
 	ErrInput         = errors.New("invalid execution request")
 	ErrApproval      = errors.New("host-key request changed; refresh and try again")
 	ErrHostKeyDenied = errors.New("SSH host key denied")
+	ErrOwnershipLost = store.ErrExecutionOwnershipLost
 )
 
 type HostKey struct {
@@ -42,6 +44,7 @@ type hostExecution struct {
 	pending  *HostKey
 	decision chan bool
 	writeMu  sync.Mutex
+	failure  string // Guarded by Engine.mu; contains only a public diagnostic.
 }
 
 type activeRun struct {
@@ -51,6 +54,14 @@ type activeRun struct {
 }
 
 type Engine struct {
+	owner               *store.ExecutionOwner
+	ownershipLost       atomic.Bool
+	closeOnce           sync.Once
+	persistenceCtx      context.Context
+	stopPersistence     context.CancelFunc
+	scripts             sync.WaitGroup
+	workersStopped      chan struct{}
+	drainStopped        chan struct{}
 	notifier            *notifications.Service
 	db                  *store.Store
 	vault               *secrets.Vault
@@ -79,7 +90,19 @@ func New(ctx context.Context, db *store.Store, vault *secrets.Vault, logger *slo
 	if logger == nil {
 		logger = slog.Default()
 	}
-	notifier, err := notifications.New(ctx, db, vault)
+	owner, err := db.AcquireExecutionOwner(ctx)
+	if err != nil {
+		return nil, err
+	}
+	initialized := false
+	defer func() {
+		if !initialized {
+			owner.Close()
+		}
+	}()
+	setup, stopSetup := context.WithTimeout(ctx, persistenceTimeout)
+	notifier, err := notifications.New(setup, db, vault)
+	stopSetup()
 	if err != nil {
 		return nil, err
 	}
@@ -87,14 +110,33 @@ func New(ctx context.Context, db *store.Store, vault *secrets.Vault, logger *slo
 	if err != nil {
 		return nil, fmt.Errorf("prepare SQLite space reclamation: %w", err)
 	}
-	if err := db.RecoverRuns(ctx); err != nil {
+	takeover, err := owner.Claim(ctx)
+	if err == nil && takeover {
+		err = waitForTakeover(ctx, owner)
+	}
+	if err != nil {
 		if reclaimer != nil {
 			reclaimer.Close()
 		}
 		return nil, err
 	}
-	ctx, cancel := context.WithCancel(ctx)
+	recovery, stopRecovery := context.WithTimeout(ctx, persistenceTimeout)
+	err = db.RecoverRuns(owner.Context(recovery))
+	stopRecovery()
+	if err != nil {
+		if reclaimer != nil {
+			reclaimer.Close()
+		}
+		return nil, err
+	}
+	ctx, cancel := context.WithCancel(owner.Context(ctx))
+	persistenceCtx, stopPersistence := context.WithCancel(context.WithoutCancel(ctx))
 	engine := &Engine{
+		persistenceCtx:      persistenceCtx,
+		stopPersistence:     stopPersistence,
+		workersStopped:      make(chan struct{}),
+		drainStopped:        make(chan struct{}),
+		owner:               owner,
 		notifier:            notifier,
 		db:                  db,
 		vault:               vault,
@@ -107,6 +149,34 @@ func New(ctx context.Context, db *store.Store, vault *secrets.Vault, logger *slo
 		now:                 time.Now,
 	}
 	engine.runner = engine.runSSH
+	go engine.drainPersistence()
+	engine.wg.Add(1)
+	go func() {
+		defer engine.wg.Done()
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-owner.Lost():
+				engine.loseOwnership()
+				return
+			case <-ticker.C:
+				check, stop := context.WithTimeout(ctx, 5*time.Second)
+				err := owner.Check(check)
+				stop()
+				if err != nil {
+					if ctx.Err() == nil {
+						logger.Error("execution ownership lost; stopping server")
+						engine.loseOwnership()
+					}
+					cancel()
+					return
+				}
+			}
+		}
+	}()
 	if reclaimer != nil {
 		engine.wg.Add(1)
 		go func() {
@@ -144,7 +214,10 @@ func New(ctx context.Context, db *store.Store, vault *secrets.Vault, logger *slo
 			case <-engine.archiveReady:
 			case <-retry.C:
 			}
-			if err := db.CompressCompletedOutput(ctx); err != nil && ctx.Err() == nil {
+			compression, cancel := context.WithTimeout(ctx, persistenceTimeout)
+			err := db.CompressCompletedOutput(compression)
+			cancel()
+			if err != nil && ctx.Err() == nil {
 				logger.Error("execution log compression failed", "error", err)
 			}
 			engine.reclaimServerOutput()
@@ -156,7 +229,10 @@ func New(ctx context.Context, db *store.Store, vault *secrets.Vault, logger *slo
 		ticker := time.NewTicker(time.Hour)
 		defer ticker.Stop()
 		for {
-			if err := db.PurgeRuns(ctx, time.Now().AddDate(0, 0, -retentionDays).Unix()); err != nil && ctx.Err() == nil {
+			retention, cancel := context.WithTimeout(ctx, persistenceTimeout)
+			err := db.PurgeRuns(retention, time.Now().AddDate(0, 0, -retentionDays).Unix())
+			cancel()
+			if err != nil && ctx.Err() == nil {
 				logger.Error("execution retention failed", "error", err)
 			}
 			// A single worker drains persisted completions. Coalesce wakeups rather
@@ -172,27 +248,66 @@ func New(ctx context.Context, db *store.Store, vault *secrets.Vault, logger *slo
 			}
 		}
 	}()
+	initialized = true
 	return engine, nil
 }
 
 // Done lets long-lived terminal connections follow service shutdown.
 func (e *Engine) Done() <-chan struct{} { return e.ctx.Done() }
 
+// Err distinguishes a lost ownership session from a normal signal or shutdown.
+func (e *Engine) Err() error {
+	if e.ownershipLost.Load() {
+		return ErrOwnershipLost
+	}
+	return nil
+}
+
 func (e *Engine) Close() {
-	// Cancel maintenance before waiting for its admission lock.
-	e.cancel()
-	e.mu.Lock()
-	e.mu.Unlock()
-	e.wg.Wait()
+	e.closeOnce.Do(func() {
+		// Cancel maintenance before waiting for its admission lock. Retain
+		// database ownership until remote cleanup and finalization have joined.
+		e.cancel()
+		e.mu.Lock()
+		e.mu.Unlock()
+		e.wg.Wait()
+		close(e.workersStopped)
+		<-e.drainStopped
+		e.mu.Lock()
+		pending := len(e.active) > 0
+		e.mu.Unlock()
+		if pending || e.ownershipLost.Load() {
+			// Failed persistence has already exhausted its drain. Do not add
+			// more database round trips while releasing an unhealthy session.
+			if err := e.owner.Discard(); err != nil {
+				e.logger.Error("discard execution ownership failed")
+			}
+			return
+		}
+		cleanup, cancel := context.WithTimeout(context.Background(), persistenceTimeout)
+		if err := e.owner.MarkStopped(cleanup); err != nil && !e.ownershipLost.Load() {
+			e.logger.Error("clear execution ownership generation failed")
+		}
+		cancel()
+		if err := e.owner.Close(); err != nil {
+			e.logger.Error("release execution ownership failed")
+		}
+	})
 }
 
 func (e *Engine) Start(ctx context.Context, actor store.Actor, jobID string, version int64) (store.Run, error) {
+	if e.ctx.Err() != nil {
+		return store.Run{}, ErrInactive
+	}
+	ctx, cancel := e.operationContext(ctx)
+	defer cancel()
 	if version < 1 {
 		return store.Run{}, ErrInput
 	}
 	// Validate authority before allowing a request to interrupt database work.
 	// CreateRun checks it again transactionally when admission is granted.
 	if err := e.db.Authorize(ctx, actor, store.ScopeRunsWrite); err != nil {
+		e.observeOwnership(err)
 		return store.Run{}, err
 	}
 	e.maintenanceMu.Lock()
@@ -215,6 +330,10 @@ func (e *Engine) Start(ctx context.Context, actor store.Actor, jobID string, ver
 	_, _ = rand.Read(random)
 	run, job, connections, err := e.db.CreateRun(ctx, actor, hex.EncodeToString(random), jobID, version)
 	if err != nil {
+		e.observeOwnership(err)
+		if run.ID != "" && !e.ownershipLost.Load() {
+			e.reconcileAdmission(run.ID)
+		}
 		return store.Run{}, err
 	}
 	return e.launch(run, job, connections), nil
@@ -229,6 +348,7 @@ func (e *Engine) launch(run store.Run, job store.Job, connections []store.Connec
 		active.hosts[c.Host.ID] = &hostExecution{ctx: ctx, cancel: cancel}
 	}
 	e.active[run.ID] = active
+	e.scripts.Add(1)
 	e.wg.Add(1)
 	go func() { defer e.wg.Done(); e.execute(run.ID, job, connections, active) }()
 	return run
@@ -237,23 +357,24 @@ func (e *Engine) launch(run store.Run, job store.Job, connections []store.Connec
 func (e *Engine) execute(runID string, job store.Job, connections []store.Connection, active *activeRun) {
 	defer active.cancel()
 	var wg sync.WaitGroup
+	var persistence sync.WaitGroup
 	// Each worker owns one result slot. Wait before reading the completed list;
 	// result collection needs no shared flags or additional mutex.
-	results := make([]string, len(connections))
+	results := make([]hostResult, len(connections))
+	saved := make([]bool, len(connections))
 	executeHost := func(index int, c store.Connection) {
 		host := active.hosts[c.Host.ID]
 		var code *int
 		var err error
 		status, message := "succeeded", ""
 		if host.ctx.Err() == nil {
-			if err = e.db.SetRunHost(context.Background(), runID, c.Host.ID, "connecting", "", nil); err == nil {
-				code, err = e.runHost(host, c, job.Script, &outputWriter{engine: e, runID: runID, hostID: c.Host.ID, cancel: host.cancel}, func(input io.WriteCloser) {
+			if err = e.setHostState(host.ctx, runID, c.Host.ID, "connecting", "", nil); err == nil {
+				code, err = e.runHost(host, c, job.Script, &outputWriter{engine: e, runID: runID, hostID: c.Host.ID, host: host}, func(input io.WriteCloser) {
 					e.mu.Lock()
 					host.input = input
 					e.mu.Unlock()
-					if updateErr := e.db.SetRunHost(context.Background(), runID, c.Host.ID, "running", "", nil); updateErr != nil {
-						host.cancel()
-						e.logger.Error("execution state failed", "error", updateErr)
+					if updateErr := e.setHostState(host.ctx, runID, c.Host.ID, "running", "", nil); updateErr != nil && host.ctx.Err() == nil {
+						e.failHost(host, "Execution state could not be saved")
 					}
 				}, func(key ssh.PublicKey) error { return e.checkHostKey(host, c.Host, key, runID) })
 			}
@@ -274,38 +395,31 @@ func (e *Engine) execute(runID string, job store.Job, connections []store.Connec
 		if host.ctx.Err() != nil {
 			status, message = "cancelled", "Execution cancelled"
 		}
+		if host.failure != "" {
+			status, message, code = "failed", host.failure, nil
+		}
 		host.input, host.pending = nil, nil
 		host.cancel()
 		if (status == "failed" || status == "cancelled" || status == "interrupted") && job.StopOnFailure {
 			active.cancel()
 		}
 		e.mu.Unlock()
-		if err != nil && status == "failed" {
+		if status == "failed" {
 			if code != nil {
 				e.logger.Warn("script exited", "run", runID, "host", c.Host.ID, "exit_code", *code)
 			} else {
 				e.logger.Warn("host execution failed", "run", runID, "host", c.Host.ID)
 			}
 		}
-		updateErr := e.db.SetRunHost(context.Background(), runID, c.Host.ID, status, message, code)
-		if updateErr != nil {
-			e.logger.Error("execution state failed", "error", updateErr)
-			status = "failed"
-		}
-		if updateErr == nil {
-			select {
-			case e.archiveReady <- struct{}{}:
-			default:
-			}
-		}
-		if updateErr == nil && len(c.Notifications) > 0 {
-			e.wg.Add(1)
-			go func() {
-				defer e.wg.Done()
-				e.notifier.NotifyHost(e.ctx, e.logger, runID, job.Name, c, status)
-			}()
-		}
-		results[index] = status
+		results[index] = hostResult{status: status, message: message, code: code}
+		persistence.Add(1)
+		go func() {
+			defer persistence.Done()
+			result := results[index]
+			saved[index] = e.retryPersistence(runID, func(ctx context.Context) error {
+				return e.persistHost(ctx, runID, job.Name, c, &result)
+			})
+		}()
 	}
 	for index, connection := range connections {
 		if job.ExecutionMode == "parallel" {
@@ -316,15 +430,22 @@ func (e *Engine) execute(runID string, job store.Job, connections []store.Connec
 		}
 	}
 	wg.Wait()
+	e.scripts.Done()
+	persistence.Wait()
+	if slices.Contains(saved, false) {
+		return
+	}
 	status := "succeeded"
 	for _, outcome := range []string{"failed", "interrupted", "cancelled"} {
-		if slices.Contains(results, outcome) {
+		if slices.ContainsFunc(results, func(result hostResult) bool { return result.status == outcome }) {
 			status = outcome
 			break
 		}
 	}
-	if err := e.db.FinishRun(context.Background(), runID, status); err != nil {
-		e.logger.Error("execution completion failed", "error", err)
+	if !e.retryPersistence(runID, func(ctx context.Context) error {
+		return e.db.FinishRun(ctx, runID, status)
+	}) {
+		return
 	}
 	e.mu.Lock()
 	delete(e.active, runID)
@@ -338,7 +459,7 @@ func (e *Engine) execute(runID string, job store.Job, connections []store.Connec
 type outputWriter struct {
 	engine        *Engine
 	runID, hostID string
-	cancel        context.CancelFunc
+	host          *hostExecution
 }
 
 func (w *outputWriter) Write(data []byte) (int, error) {
@@ -347,9 +468,13 @@ func (w *outputWriter) Write(data []byte) (int, error) {
 	written := 0
 	for len(data) > 0 {
 		size := min(len(data), store.MaxOutputBatchBytes)
-		if err := w.engine.db.AppendOutput(context.Background(), w.runID, w.hostID, data[:size]); err != nil {
-			if w.cancel != nil {
-				w.cancel()
+		ctx, cancel := context.WithTimeout(w.engine.persistenceCtx, persistenceTimeout)
+		err := w.engine.db.AppendOutput(ctx, w.runID, w.hostID, data[:size])
+		cancel()
+		if err != nil {
+			w.engine.observeOwnership(err)
+			if w.engine.ctx.Err() == nil {
+				w.engine.failHost(w.host, "Execution output could not be saved")
 			}
 			return written, err
 		}
@@ -372,6 +497,8 @@ func (e *Engine) host(runID, hostID string) (*hostExecution, error) {
 }
 
 func (e *Engine) Cancel(ctx context.Context, actor store.Actor, runID, hostID string) error {
+	ctx, cancel := e.operationContext(ctx)
+	defer cancel()
 	if err := e.db.Authorize(ctx, actor, store.ScopeRunsWrite); err != nil {
 		return err
 	}
@@ -389,6 +516,8 @@ func (e *Engine) Cancel(ctx context.Context, actor store.Actor, runID, hostID st
 }
 
 func (e *Engine) Input(ctx context.Context, actor store.Actor, runID, hostID, data string) error {
+	ctx, cancel := e.operationContext(ctx)
+	defer cancel()
 	if len(data) == 0 || len(data) > 4096 {
 		return ErrInput
 	}
@@ -431,12 +560,14 @@ func (e *Engine) Input(ctx context.Context, actor store.Actor, runID, hostID, da
 		}
 		return err
 	case <-timer.C:
-		host.cancel()
+		e.failHost(host, "Terminal input timed out")
 		return ErrInactive
 	}
 }
 
 func (e *Engine) Pending(ctx context.Context, actor store.Actor, runID string) ([]HostKey, error) {
+	ctx, cancel := e.operationContext(ctx)
+	defer cancel()
 	if err := e.db.Authorize(ctx, actor, store.ScopeRunsRead); err != nil {
 		return nil, err
 	}
@@ -454,6 +585,8 @@ func (e *Engine) Pending(ctx context.Context, actor store.Actor, runID string) (
 }
 
 func (e *Engine) Approve(ctx context.Context, actor store.Actor, runID, hostID, fingerprint string, accept bool) error {
+	ctx, cancel := e.operationContext(ctx)
+	defer cancel()
 	// Denial needs execution authority too; trust changes require host authority.
 	if err := e.db.Authorize(ctx, actor, store.ScopeRunsWrite); err != nil {
 		return err
@@ -480,7 +613,9 @@ func (e *Engine) Approve(ctx context.Context, actor store.Actor, runID, hostID, 
 
 func (e *Engine) checkHostKey(host *hostExecution, target store.Host, key ssh.PublicKey, runID string) error {
 	public := string(ssh.MarshalAuthorizedKey(key))
-	trusted, err := e.db.TrustedHostKey(host.ctx, target.ID, target.Address, target.Port)
+	ctx, cancel := e.operationContext(host.ctx)
+	trusted, err := e.db.TrustedHostKey(ctx, target.ID, target.Address, target.Port)
+	cancel()
 	if err != nil {
 		return err
 	}
@@ -495,7 +630,7 @@ func (e *Engine) checkHostKey(host *hostExecution, target store.Host, key ssh.Pu
 	host.pending, host.decision = request, make(chan bool, 1)
 	decision := host.decision
 	e.mu.Unlock()
-	if err := e.db.SetRunHost(host.ctx, runID, target.ID, "awaiting_approval", "SSH host key requires approval", nil); err != nil {
+	if err := e.setHostState(host.ctx, runID, target.ID, "awaiting_approval", "SSH host key requires approval", nil); err != nil {
 		return err
 	}
 	select {

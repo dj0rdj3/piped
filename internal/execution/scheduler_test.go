@@ -28,10 +28,18 @@ func (w *schedulerErrorWriter) Write(data []byte) (int, error) {
 func TestPendingSchedulerBatchCleansUpOnErrorAndCancellation(t *testing.T) {
 	f := newFixture(t, "sequential", false)
 	f.engine.Close()
+	owner, err := f.db.AcquireExecutionOwner(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { owner.Close() })
+	if _, err := owner.Claim(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	output := &schedulerErrorWriter{make(chan struct{}), make(chan struct{})}
-	engine := &Engine{db: f.db, ctx: ctx, now: time.Now, logger: slog.New(slog.NewTextHandler(output, nil))}
+	engine := &Engine{db: f.db, owner: owner, ctx: ctx, now: time.Now, logger: slog.New(slog.NewTextHandler(output, nil))}
 	at := time.Now().Truncate(time.Minute)
 	// No schedules: normal completion must release the batch as well.
 	engine.runSchedules(at)

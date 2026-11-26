@@ -84,10 +84,16 @@ func Cleanup(ctx context.Context, s *store.Store, logger *slog.Logger) {
 	ticker := time.NewTicker(time.Hour)
 	defer ticker.Stop()
 	for {
-		if err := s.PurgeSessions(ctx, time.Now().Unix()); err != nil && ctx.Err() == nil {
+		cleanup, cancel := context.WithTimeout(ctx, 5*time.Second)
+		err := s.PurgeSessions(cleanup, time.Now().Unix())
+		cancel()
+		if err != nil && ctx.Err() == nil {
 			logger.Error("session cleanup failed", "error", err)
 		}
-		if err := s.PurgeAPIKeys(ctx, time.Now()); err != nil && ctx.Err() == nil {
+		cleanup, cancel = context.WithTimeout(ctx, 5*time.Second)
+		err = s.PurgeAPIKeys(cleanup, time.Now())
+		cancel()
+		if err != nil && ctx.Err() == nil {
 			logger.Error("API key cleanup failed", "error", err)
 		}
 		select {

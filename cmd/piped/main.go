@@ -70,6 +70,8 @@ func run(args []string, input io.Reader, output io.Writer) error {
 	// The build constant also removes key issuance from the production binary;
 	// rejecting the command in parseOptions alone would leave this code linked.
 	if httpserver.DevelopmentBuild && options.command == "api-key" {
+		ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
 		if options.keyRevoke != "" {
 			decoded, err := hex.DecodeString(options.keyRevoke)
 			if err != nil || len(decoded) != 16 {
@@ -116,7 +118,9 @@ func run(args []string, input io.Reader, output io.Writer) error {
 		return err
 	}
 	if options.command == "register" {
-		initialized, err := db.HasUsers(ctx)
+		lookup, cancel := context.WithTimeout(ctx, 5*time.Second)
+		initialized, err := db.HasUsers(lookup)
+		cancel()
 		if err != nil {
 			return err
 		}
@@ -147,7 +151,9 @@ func run(args []string, input io.Reader, output io.Writer) error {
 			return errors.New("password input too long")
 		}
 		secret := strings.TrimSuffix(strings.TrimSuffix(string(password), "\n"), "\r")
-		u, err := a.InitAdmin(ctx, options.username, secret)
+		setup, cancel := context.WithTimeout(ctx, 5*time.Second)
+		u, err := a.InitAdmin(setup, options.username, secret)
+		cancel()
 		if err != nil {
 			return err
 		}
@@ -159,22 +165,25 @@ func run(args []string, input io.Reader, output io.Writer) error {
 		return err
 	}
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
-	credentialService, err := credentials.New(ctx, db, configuration.Vault)
+	setup, cancelSetup := context.WithTimeout(ctx, 15*time.Second)
+	defer cancelSetup()
+	credentialService, err := credentials.New(setup, db, configuration.Vault)
 	if err != nil {
 		return err
 	}
-	hostService, err := hosts.New(ctx, db, configuration.Vault)
+	hostService, err := hosts.New(setup, db, configuration.Vault)
 	if err != nil {
 		return err
 	}
-	jobService, err := jobs.New(ctx, db, configuration.Vault)
+	jobService, err := jobs.New(setup, db, configuration.Vault)
 	if err != nil {
 		return err
 	}
-	notificationService, err := notifications.New(ctx, db, configuration.Vault)
+	notificationService, err := notifications.New(setup, db, configuration.Vault)
 	if err != nil {
 		return err
 	}
+	cancelSetup()
 	listener, err := net.Listen("tcp", configuration.ListenAddress)
 	if err != nil {
 		return err
@@ -185,6 +194,20 @@ func run(args []string, input io.Reader, output io.Writer) error {
 		return err
 	}
 	defer engine.Close()
+	// Ownership loss stops HTTP admission as well as the execution workers.
+	engineStopped := make(chan struct{})
+	go func() {
+		defer close(engineStopped)
+		select {
+		case <-engine.Done():
+			stop()
+		case <-ctx.Done():
+		}
+	}()
+	defer func() {
+		stop()
+		<-engineStopped
+	}()
 	handler, err := httpserver.New(a, httpserver.Config{
 		Listen:         configuration.ListenAddress,
 		Origin:         configuration.PublicURL,
@@ -221,7 +244,7 @@ func run(args []string, input io.Reader, output io.Writer) error {
 		<-cleanupDone
 	}()
 	fmt.Fprintln(output, "Piped listening on", configuration.ListenAddress, "- public URL:", configuration.PublicURL)
-	return serveHTTP(ctx, stop, server, listener, logger)
+	return errors.Join(serveHTTP(ctx, stop, server, listener, logger), engine.Err())
 }
 
 // Serve failures cancel the same lifecycle as signals. Join HTTP shutdown before

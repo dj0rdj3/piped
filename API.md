@@ -170,8 +170,12 @@ Use `tail=1` without `after` to fetch the bounded recent tail and a `truncated` 
 Errors are JSON: `{"error":"message"}`. Typical statuses: 400 invalid input,
 401 missing/expired/revoked key, 403 missing scope or rejected origin/host,
 404 missing resource, 409 conflicting version/state, 415 wrong content type,
-429 rate limit, and 503 busy authentication work. JSON bodies have endpoint-specific
-limits and an overall 1 MiB bearer request limit.
+429 rate limit, and 503 busy authentication work or a timed-out request. JSON bodies
+have endpoint-specific limits and an overall 1 MiB bearer request limit.
+
+API requests have a 15-second processing budget. Deadline responses include
+`Retry-After: 2` and do not invalidate the key. Re-read resource state before retrying
+a timed-out mutation, since its write may already have committed.
 
 Bearer requests are limited to 120 per minute per client IP and per key. HTTP 429
 includes `Retry-After: 60`. Authentication attempts for browser key management retain

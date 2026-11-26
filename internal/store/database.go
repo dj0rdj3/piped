@@ -32,6 +32,9 @@ func OpenDatabase(ctx context.Context, config Config) (*Store, error) {
 		}
 		return Open(ctx, config.Path)
 	}
+	// Setup queries and migrations also need a deadline after TCP connects.
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
 	var db *sql.DB
 	switch config.Driver {
 	case "postgres":
@@ -55,6 +58,14 @@ func OpenDatabase(ctx context.Context, config Config) (*Store, error) {
 		parsed.AllowAllFiles = false
 		parsed.ClientFoundRows = true
 		parsed.Timeout = 5 * time.Second
+		// Bound established network I/O as well as dialing, including COMMIT
+		// and ROLLBACK, whose driver methods have no context argument.
+		if parsed.ReadTimeout <= 0 || parsed.ReadTimeout > 5*time.Second {
+			parsed.ReadTimeout = 5 * time.Second
+		}
+		if parsed.WriteTimeout <= 0 || parsed.WriteTimeout > 5*time.Second {
+			parsed.WriteTimeout = 5 * time.Second
+		}
 		if err := parsed.Apply(mysql.Charset("utf8mb4", "utf8mb4_bin")); err != nil {
 			return nil, errors.New("configure database character set failed")
 		}
@@ -142,11 +153,16 @@ func (d *database) BeginTx(ctx context.Context, options *sql.TxOptions) (*transa
 			return nil, err
 		}
 	}
-	return &transaction{Tx: tx, database: d}, nil
+	wrapped := &transaction{Tx: tx, database: d}
+	if err := authorizeExecutionOwner(ctx, wrapped); err != nil {
+		tx.Rollback()
+		return nil, err
+	}
+	return wrapped, nil
 }
 
 func (d *database) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
-	if d.dialect == "sqlite" {
+	if d.dialect == "sqlite" && ctx.Value(executionOwnerContextKey{}) == nil {
 		return d.DB.ExecContext(ctx, d.query(query), sqlArguments(args)...)
 	}
 	tx, err := d.BeginTx(ctx, nil)

@@ -1,6 +1,7 @@
 package response
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -30,6 +31,9 @@ func WriteError(w http.ResponseWriter, err error, logger *slog.Logger) {
 		public = &Error{400, err.Error()}
 	case errors.Is(err, auth.ErrBusy):
 		public = &Error{503, err.Error()}
+		w.Header().Set("Retry-After", "2")
+	case errors.Is(err, context.DeadlineExceeded):
+		public = &Error{503, "request timed out; try again"}
 		w.Header().Set("Retry-After", "2")
 	case errors.Is(err, store.ErrConflict):
 		public = &Error{409, "username already exists"}

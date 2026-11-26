@@ -221,6 +221,28 @@ func (s *Store) FinishRun(ctx context.Context, id, status string) error {
 
 const MaxOutputBatchBytes = 64 * 1024
 
+func (s *Store) FailUnlaunchedRun(ctx context.Context, id string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	now := time.Now().Unix()
+	if _, err := tx.ExecContext(ctx, `UPDATE run_hosts SET status = 'failed',
+		message = 'Run admission could not be confirmed; script was not started', finished_at = ?
+		WHERE run_id = ? AND finished_at = 0`, now, id); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE runs SET status = 'failed', finished_at = ? WHERE id = ? AND finished_at = 0`, now, id); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.notifyRunState(id)
+	return nil
+}
+
 func (s *Store) AppendOutput(ctx context.Context, runID, hostID string, data []byte) error {
 	if len(data) == 0 {
 		return nil
@@ -395,7 +417,14 @@ func (s *Store) RecoverRuns(ctx context.Context) error {
 	if _, err := tx.ExecContext(ctx, `UPDATE run_hosts SET status = 'failed', message = 'Service stopped during execution', finished_at = ? WHERE finished_at = 0`, now); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE runs SET status = 'failed', finished_at = ? WHERE finished_at = 0`, now); err != nil {
+	// A crash may occur after all host results commit but before the parent
+	// completion does. Preserve their actual outcome rather than losing it.
+	if _, err := tx.ExecContext(ctx, `UPDATE runs SET status = CASE
+		WHEN NOT EXISTS (SELECT 1 FROM run_hosts h WHERE h.run_id = runs.id) THEN 'failed'
+		WHEN EXISTS (SELECT 1 FROM run_hosts h WHERE h.run_id = runs.id AND h.status = 'failed') THEN 'failed'
+		WHEN EXISTS (SELECT 1 FROM run_hosts h WHERE h.run_id = runs.id AND h.status = 'interrupted') THEN 'interrupted'
+		WHEN EXISTS (SELECT 1 FROM run_hosts h WHERE h.run_id = runs.id AND h.status = 'cancelled') THEN 'cancelled'
+		ELSE 'succeeded' END, finished_at = ? WHERE finished_at = 0`, now); err != nil {
 		return err
 	}
 	return tx.Commit()

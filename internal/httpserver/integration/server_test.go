@@ -41,7 +41,12 @@ type harness struct {
 func newHarness(t *testing.T, secure bool, development ...bool) *harness {
 	t.Helper()
 	driver, dsn := testdatabase.Settings(t)
-	s, err := store.OpenDatabase(context.Background(), store.Config{Driver: driver, DSN: dsn, Path: filepath.Join(t.TempDir(), "data", "piped.db")})
+	return newHarnessWithDatabase(t, secure, store.Config{Driver: driver, DSN: dsn, Path: filepath.Join(t.TempDir(), "data", "piped.db")}, development...)
+}
+
+func newHarnessWithDatabase(t *testing.T, secure bool, configuration store.Config, development ...bool) *harness {
+	t.Helper()
+	s, err := store.OpenDatabase(context.Background(), configuration)
 	if err != nil {
 		t.Fatal(err)
 	}

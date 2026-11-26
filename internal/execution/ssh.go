@@ -386,7 +386,9 @@ func (w *controlOutput) Flush() error {
 // the approved key, and a further change starts a fresh approval request.
 func (e *Engine) connectSSH(ctx context.Context, c store.Connection, auth ssh.AuthMethod, verify func(ssh.PublicKey) error) (*ssh.Client, net.Conn, func() bool, error) {
 	address := net.JoinHostPort(c.Host.Address, strconv.Itoa(c.Host.Port))
-	trusted, err := e.db.TrustedHostKey(ctx, c.Host.ID, c.Host.Address, c.Host.Port)
+	lookup, cancel := e.operationContext(ctx)
+	trusted, err := e.db.TrustedHostKey(lookup, c.Host.ID, c.Host.Address, c.Host.Port)
+	cancel()
 	if err != nil {
 		return nil, nil, nil, err
 	}

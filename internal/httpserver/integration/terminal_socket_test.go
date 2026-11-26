@@ -91,6 +91,43 @@ func waitTerminalState(t *testing.T, conn *websocket.Conn) {
 	t.Fatal("no terminal state")
 }
 
+func TestUpgradedTerminalOutlivesHandshakeDeadline(t *testing.T) {
+	f := newTerminalFixture(t)
+	f.server.Close()
+	contexts := make(chan context.Context, 1)
+	f.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), time.Second)
+		defer cancel()
+		contexts <- ctx
+		f.h.handler.ServeHTTP(w, r.WithContext(ctx))
+	}))
+	t.Cleanup(f.server.Close)
+	connection := f.dial(t, 0)
+	waitTerminalState(t, connection)
+	request := <-contexts
+	select {
+	case <-request.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("handshake request deadline did not expire")
+	}
+	if err := f.h.store.AppendOutput(context.Background(), f.run.ID, f.host.ID, []byte("after handshake deadline")); err != nil {
+		t.Fatal(err)
+	}
+	for range 10 {
+		message := readTerminalMessage(t, connection)
+		if terminalMessageType(message) == "output" {
+			var chunks []store.OutputChunk
+			if err := json.Unmarshal(message["chunks"], &chunks); err != nil {
+				t.Fatal(err)
+			}
+			if len(chunks) == 1 && string(chunks[0].Data) == "after handshake deadline" {
+				return
+			}
+		}
+	}
+	t.Fatal("API deadline stopped an already upgraded terminal")
+}
+
 func TestTerminalSocketOriginSessionAndHostChecks(t *testing.T) {
 	f := newTerminalFixture(t)
 	cases := []struct {

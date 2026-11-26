@@ -203,7 +203,9 @@ func (s *Service) NotifyHost(ctx context.Context, logger *slog.Logger, runID, jo
 	case <-ctx.Done():
 		return
 	}
-	output, err := s.db.NotificationOutput(ctx, runID, connection.Host.ID)
+	lookup, cancel := context.WithTimeout(ctx, 5*time.Second)
+	output, err := s.db.NotificationOutput(lookup, runID, connection.Host.ID)
+	cancel()
 	if err != nil {
 		logger.Error("notification output read failed", "run", runID, "host", connection.Host.ID)
 		return

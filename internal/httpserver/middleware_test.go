@@ -1,11 +1,37 @@
 package httpserver
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestAPIDeadlineCoversAuthenticationAndCancelsFinishedRequests(t *testing.T) {
+	for _, path := range []string{"/api/auth/login", "/api/v1/me", "/api/development/v1/me", "/mcp"} {
+		t.Run(path, func(t *testing.T) {
+			server := &Server{config: Config{Origin: "http://127.0.0.1:8080"}}
+			var operation context.Context
+			handler := server.protect(http.HandlerFunc(func(_ http.ResponseWriter, request *http.Request) {
+				operation = request.Context()
+				deadline, ok := operation.Deadline()
+				if !ok || time.Until(deadline) > 20*time.Second {
+					t.Error("API authentication/storage can wait indefinitely")
+				}
+			}))
+			request := httptest.NewRequest(http.MethodGet, path, nil)
+			handler.ServeHTTP(httptest.NewRecorder(), request)
+			if operation == nil || operation.Err() != context.Canceled {
+				t.Fatal("finished request retained its deadline timer or background work")
+			}
+			if request.Context().Err() != nil {
+				t.Fatal("API middleware cancelled the caller's context")
+			}
+		})
+	}
+}
 
 func TestOriginSchemeCasingKeepsCookieAndHeaderSecurity(t *testing.T) {
 	for _, fixture := range []struct {
